@@ -1,5 +1,3 @@
-# IMRSim说明文档
-
 ## Overview
 
 基于交错式磁记录（InterlacedMagnetic Recording，简写IMR）的机械硬盘是近年来具有前景的一种新型存储设备。以传统磁记录（Conventional Magnetic Recording，简写CMR）为基础的机械硬盘在容量增长方面已接近极限。虽然基于叠瓦式磁记录（Shingled Magnetic Recording，简写SMR）的机械硬盘能够一定程度提升数据存储密度，但是它在实际应用中面临着较大的问题。IMR是一种最近被提出的技术，相较于SMR具有更高的数据存储密度和更低的写入放大。IMR的发展进步能够推动存储设备的革新，而交错式磁盘的模拟是对IMR技术进行研究的重要手段，但是现在公开资料中并不存在一款可用的IMR磁盘模拟器。
