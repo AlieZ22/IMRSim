@@ -1,0 +1,111 @@
+This is a quick reference for developers and testers.
+The driver codes are tested aganist kernel version above 3.14.0. 
+
+1. Build kernel module and user space tool:
+
+   (1) $ make
+
+2. Load the driver into running kernel:
+
+   (1) $ sudo make install
+   (2) (if kernel requires signed modules) $ sudo depmod --quick
+   (3) $ sudo modprobe dm-imrsim
+
+3. Verify module was loaded successfully and appears as an available device mapper target:
+
+   (4) $ dmsetup targets
+
+4. Prepare a block drive:
+
+   Note: The maximum IMRSim size is 2MB larger than the available capacity in order
+         to write some persistence data.
+
+   (a) Use either a block device (e.g. /dev/sdb) or partition (e.g. /dev/sdb1) with capacity > 256MB.
+
+   (b) or, use a loop device with four 256 MB zones:
+
+      1. $ dd if=/dev/zero of=/tmp/imrsim1 bs=4096 seek=$(((256*4+64)*1024*1024/4096-1)) count=1
+      2. $ losetup /dev/loop1 /tmp/imrsim1
+      3. (when no longer needed) $ losetup -d /dev/loop1
+
+
+   (c) or, use a loop device with 400 256 MB zones:  （100G）
+
+      1. $ dd if=/dev/zero of=/tmp/imrsim1 bs=4096 seek=$(((256*400+128)*1024*1024/4096-1)) count=1
+      2. $ losetup /dev/loop1 /tmp/imrsim1
+      3. (when no longer needed) $ losetup -d /dev/loop1
+
+      80 zones; 41943030 sectors
+
+5. Determine the 256 MB zone capacity and number of 512-byte sectors required for those zones:
+
+   (a) zones:
+
+      1. $ imrsim_util/imr_format.sh -z -d /dev/loop1
+
+   (b) sectors:
+
+      1. $ imrsim_util/imr_format.sh -d /dev/loop1
+
+   (c) to use less than the total zone capacity
+
+         X = (524288 * n)
+         524288 <= X <= Max_sec
+
+         n = 1, 2, 3, ... , MAX_sec / 524288
+
+6. Create IRMSim device
+
+   1. $ echo "0 `imrsim_util/imr_format.sh -d /dev/loop1` imrsim /dev/loop1 0" | dmsetup create imrsim
+   2. (when no longer needed) $ sudo dmsetup remove imrsim
+
+    If successful, the IMRsim device created with device name:
+
+    /dev/mapper/imrsim  - this is a ZAC/ZBC block volume
+
+    +-------------------------------------------------------------------------+
+    | CMR - 256 MB | Zone 1 - 256 MB |  ...  | Zone n - 256 MB | CMR - 256 MB |
+    +-------------------------------------------------------------------------+
+
+    After above steps, the driver module will create a default zone configuration with
+    256MB zone size, the first and last zones are the conventional zones, and others
+    are sequential zones. The zone configuration can be changed in different zone type
+    and zone size. But the type of the zone is restricted to follow the current ZAC/ZBC 
+    specs. Run imrsim_util commands to do limitted configuration changes.
+
+    Notes:
+ 
+    If the driver module wasn't successfully loaded, there is a case that metadata 
+    persisted contents don't match to current device. Use Linux commands to erase the
+    first sector or all persistence space in the reserved area.
+
+    If the IMRSim size (X above) is changed it will be persisted. But if recreate the device
+    with different size, previous persisted metadata will be no longer matching to current 
+    device although the data was persisted valid. Using reset to default config command to 
+    flush new metadata to the persistence repository.
+    
+    The driver module doesn't support multiple IMRSim devices yet. Any attempt to create 
+    more than one IMRSim device will be rejected. 
+
+7. Run test/util commands in imrsim-util or run dd command
+
+   Notes: The address and data size have to be 4KB aligned.
+
+8. Test on Filesystems
+
+   Testing and research notes:
+   
+   imrsim device is a block device with IMR rules guarded. To learn full pictures on which rule 
+   violation may happen after mounting a filesystem to the device, one option is to turn on the
+   read and write out of policy flags by using the utility tool. All violation statistics and 
+   zone status can be viewed after read/write or other operations. 
+   
+
+
+
+
+Delete:
+(1)sudo dmsetup remove imrsim
+(2)losetup -d /dev/loop1
+(3)rmmod dm_imrsim
+(4)make clean

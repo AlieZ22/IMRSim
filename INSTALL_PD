@@ -1,0 +1,21 @@
+$ make
+
+$ sudo make install
+$ sudo depmod --quick
+$ sudo modprobe dm-imrsim
+
+$ dmsetup targets
+
+--build--by partition (256GB+1GB)
+
+Use either a block device (e.g. /dev/sdb) or <partition> (e.g. /dev/sdb1) with capacity > 256MB.
+
+--check--zones sectors
+zones:1024
+sectors:256*1024*1024*zones/512 = 536870912
+
+
+$ echo "0 536870912 imrsim /dev/sdb2 0" | dmsetup create imrsim
+
+# Initialize 512 MB at the end of the device for IMRSim persistence data.
+dd if=/dev/zero of=/dev/mapper/imrsim bs=4096 seek=$((536870913)) count=128*1024 2> /dev/null 1> /dev/null
