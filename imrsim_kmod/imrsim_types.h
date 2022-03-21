@@ -6,7 +6,7 @@
 #define TOP_TRACK_SIZE 456
 #define BOTTOM_TRACK_SIZE 568
 
-// 映射表项的总个数
+// The total number of mapping table entries
 #define TOTAL_ITEMS (TOP_TRACK_SIZE+BOTTOM_TRACK_SIZE)*TOP_TRACK_NUM_TOTAL
 
 enum imrsim_zone_conditions{
@@ -36,8 +36,9 @@ struct imrsim_zone_status
     __u16                        z_conds;
     __u8                         z_type;
     __u8                         z_flag;
-    struct imrsim_zone_track     z_tracks[TOP_TRACK_NUM_TOTAL];  /* 仅保存一个zone中所有顶部磁道的记录，是否有数据 */
-    //映射表
+    // save the records of all the top tracks in a zone, whether there is data
+    struct imrsim_zone_track     z_tracks[TOP_TRACK_NUM_TOTAL];   
+    // mapping table
     __u32                        z_map_size;
     int                          z_pba_map[TOTAL_ITEMS];
 };
@@ -76,8 +77,8 @@ struct imrsim_zone_stats
 {
     struct imrsim_out_of_policy_read_stats   out_of_policy_read_stats;
     struct imrsim_out_of_policy_write_stats  out_of_policy_write_stats;
-    __u32 rewrite_total;      // 记录重写次数
-    __u32 rewrite_single;     // 记录单边重写次数
+    __u32 rewrite_total;      // record rewrite total times
+    __u32 rewrite_single;     // record single rewrite times
 };
 
 struct imrsim_stats
@@ -112,7 +113,7 @@ struct imrsim_state
 typedef struct
 {
   __u64                      lba;          /* IN            */
-  __u32                      num_zones;    /* IN/OUT        */  // 要查询的zone的个数
+  __u32                      num_zones;    /* IN/OUT,The number of zones to be queried  */  
   int                        criteria;     /* IN            */
   struct imrsim_zone_status  ptr[1];       /* OUT           */
 } imrsim_zbc_query;
