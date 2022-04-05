@@ -1,3 +1,5 @@
+For example: building IMRSim on physical cmr-based HDD
+
 $ make
 
 $ sudo make install
@@ -10,10 +12,9 @@ $ dmsetup targets
 
 Use either a block device (e.g. /dev/sdb) or <partition> (e.g. /dev/sdb1) with capacity > 256MB.
 
---check--zones sectors
+--check--zones sectors [256GB]
 zones:1024
 sectors:256*1024*1024*zones/512 = 536870912
-
 
 $ echo "0 536870912 imrsim /dev/sdb2 0" | dmsetup create imrsim
 
