@@ -1,4 +1,4 @@
-## Overview
+## Abstract
 
 The emerging interlaced magnetic recording (IMR) technology achieves a higher areal density for hard disk drive (HDD) over the conventional magnetic recording (CMR) technology. IMR-based HDD interlaces top tracks and bottom tracks, where each bottom track is overlapped with two neighboring top tracks. Thus, top tracks can be updated without restraint, whereas bottom tracks can be updated by the time-consuming read-modify-write (RMW) update strategy. Therefore, the layout of the tracks between the IMR-based HDD and the CMR-based HDD is much different. Unfortunately, there has been no related disk simulator and product available to the public, which motivates us to develop an open-source IMR disk simulator to provide a platform for further research.
 
@@ -19,7 +19,7 @@ More details can be found in the paper.
 
 
 
-## source
+## Source
 
 You can get IMRSim at the following link:
 
@@ -28,7 +28,7 @@ You can get IMRSim at the following link:
 
 
 
-## Building
+## Build
 
 operating system: Linux（Recommended version: Ubuntu14.10）
 
@@ -91,7 +91,7 @@ operating system: Linux（Recommended version: Ubuntu14.10）
 
 
 
-## Destory
+## Destroy
 
 After building IMRSim, to destroy it, you can do the following:
 
