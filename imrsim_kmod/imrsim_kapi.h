@@ -175,7 +175,8 @@ int imrsim_reset_default_config(void);
  *
  * IMRSIM_RESET_ZONECONFIG
  *
- * Reset IMRSIM zone configuration to default 
+ * Reset IMRSIM zone configuration to default (divide LBA space into zones
+ * with the first and last zone CMR, the rest SMR)
  *
  * Returns 0 if operation is successful, negative otherwise.
  *

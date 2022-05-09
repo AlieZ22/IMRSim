@@ -7,6 +7,13 @@
 #include <sys/ioctl.h>
 #include <linux/types.h>
 
+/* 
+ * The following user app codes are utility tools and also show examples. 
+ 
+ * User applications need to include appropriate header file to replace 
+ * following redefinition. User/Kernel APIs will be separated with a library 
+ * wrapup later.
+ */
 #define   u8       __u8
 #define   u32      __u32
 #define   u64      __u64
@@ -158,7 +165,7 @@ void imrsim_zone_iot(int fd, int seq, char *argv[])
    u32 num_zones = 0;      // how many zones need to query
    u64 num64     = 0;      // sectors in zone
    u64 lba       = 0;
-   u8  num8      = 0;        
+   u8  num8      = 0;      // 没用   
    imrsim_zbc_query  *zbc_query;
 
    switch(seq)
@@ -392,10 +399,10 @@ void imrsim_report_zone_stats(struct imrsim_stats  *stats, u32 idx)
             idx, stats->zone_stats[idx].out_of_policy_write_stats.span_zones_count);
     printf("zone[%u] imrsim out of policy write stats: unaligned count: %u\n",
             idx, stats->zone_stats[idx].out_of_policy_write_stats.unaligned_count);
-    printf("zone[%u] imrsim rewrite_total count: %u\n",
-                        idx, stats->zone_stats[idx].rewrite_total);    
-    printf("zone[%u] imrsim rewrite_single count: %u\n",
-                    idx, stats->zone_stats[idx].rewrite_single);  
+    printf("zone[%u] extra write count: %u\n",
+            idx, stats->zone_stats[idx].z_extra_write_total);    
+    printf("zone[%u] write total count: %u\n",
+            idx, stats->zone_stats[idx].z_write_total); 
     printf("\n");
 }
 
@@ -414,11 +421,19 @@ void imrsim_report_stats(struct imrsim_stats  *stats, u32 num32)
                     i, stats->zone_stats[i].out_of_policy_write_stats.span_zones_count);
         printf("zone[%u] imrsim out of policy write stats: unaligned count: %u\n",
                     i, stats->zone_stats[i].out_of_policy_write_stats.unaligned_count);
-        printf("zone[%u] imrsim rewrite_total count: %u\n",
-                        i, stats->zone_stats[i].rewrite_total);    
-        printf("zone[%u] imrsim rewrite_single count: %u\n",
-                    i, stats->zone_stats[i].rewrite_single);  
+        printf("zone[%u] extra write count: %u\n",
+                    i, stats->zone_stats[i].z_extra_write_total);    
+        printf("zone[%u] write total count: %u\n",
+                    i, stats->zone_stats[i].z_write_total);  
         printf("\n");
+    }
+
+    printf("imrsim extra write total count: %llu\n", stats->extra_write_total);
+    printf("imrsim write total count: %llu\n", stats->write_total);
+    if(0 != stats->write_total - stats->extra_write_total)
+    {
+        printf("imrsim WA is write_total / (write_total - extra_write_total) : %lf\n", 
+        (double)stats->write_total/((double)stats->write_total - (double)stats->extra_write_total));
     }
 }
 
@@ -429,12 +444,14 @@ void imrsim_stats_iot(int fd, int seq, char *argv[])
     u32    num_zones = 0; 
     u64    num64     = 0;
 
+
+    // ioctl()方法，设备驱动程序中对设备I/O通道进行管理，需要驱动程序提供对ioctl的支持
     if (ioctl(fd, IOCTL_IMRSIM_GET_NUMZONES, &num_zones)) {
         printf("unable to get number of zones\n");
         return;
     }
     stats = (struct imrsim_stats *)malloc(sizeof(struct imrsim_dev_stats)
-        + sizeof(u32) + sizeof(struct imrsim_zone_stats) * num_zones);
+        + sizeof(u32) + sizeof(u64)*2 + sizeof(struct imrsim_zone_stats) * num_zones);
     if (!stats) {
         printf("No enough memory to continue.\n");
         return;
@@ -645,7 +662,7 @@ void imrsim_config_iot(int fd, int seq, char *argv[])
 
 int main(int argc, char* argv[])
 {
-    int   fd;           // file description: 0:success，-1:fail
+    int   fd;           // 文件描述符：0表示成功，-1表示失败
     int   seq;
     char  code;
 
@@ -654,7 +671,7 @@ int main(int argc, char* argv[])
     }
     code = argv[2][0];
     seq = atoi(argv[3]);
-    fd = open(argv[1], O_RDWR);      
+    fd = open(argv[1], O_RDWR);      // 以可读写方式打开文件
 
     if (-1 == fd)
     {

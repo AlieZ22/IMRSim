@@ -18,12 +18,11 @@
 #include "imrsim_zerror.h"
 
 /*
-    The kernel module in the Device Mapper framework is mainly responsible for building 
-the target driver to build the disk structure and function.
+Device Mapper框架中的内核模块，主要负责构建目标驱动插件（target driver），用以构建磁盘结构与功能
 */
 
-/* Some basic disk information */
-#define IMR_ZONE_SIZE_SHIFT_DEFAULT      16      /* number of blocks/zone, e.g. 2^16=65536 */
+/* 一些磁盘基本信息，这里的数字都表示指数，后续的计算会使用位移进行运算 */
+#define IMR_ZONE_SIZE_SHIFT_DEFAULT      16      /* number of blocks/zone, 65536 */
 #define IMR_BLOCK_SIZE_SHIFT_DEFAULT     3       /* number of sectors/block, 8   */
 #define IMR_PAGE_SIZE_SHIFT_DEFAULT      3       /* number of sectors/page, 8    */
 #define IMR_SECTOR_SIZE_SHIFT_DEFAULT    9       /* number of bytes/sector, 512  */
@@ -32,51 +31,52 @@ the target driver to build the disk structure and function.
 #define IMR_ROTATE_PENALTY               11000   /* usec ,  5400rpm->  rotate time: 11ms*/
 
 
-#define IMR_ALLOCATION_PHASE             2     /* phase of data distribution (2-3)*/
+#define IMR_ALLOCATION_PHASE             2     /* phase of data distribution */
 
 #define TOP_TRACK_NUM_TOTAL 64
 /*
- * The size of a zone is 256MB, divided into 64 track groups (top-bottom), with an average track of 2MB.
- * A group of top-bottom has 4MB, that is, 1024 blocks, and there are 64 groups of top-bottom in a zone.
+ * 一个磁道的大小大概在1~2MB左右
+ * 一个zone大小为256MB，分成64个磁道组（top-bottom），平均一个磁道2MB
+ * 一组top-bottom有4MB，即1024个block，而一个zone中共有64组top-bottom
  */
 
 #define IMR_MAX_CAPACITY                 21474836480
 
-static __u64   IMR_CAPACITY;            /* disk capacity (in sectors) */
-static __u32   IMR_NUMZONES;            /* number of zones */
+static __u64   IMR_CAPACITY;            /* 磁盘容量，以扇区为单位 */
+static __u32   IMR_NUMZONES;            /* zone数目 */
 static __u32   IMR_NUMZONES_DEFAULT;
-static __u32   IMR_ZONE_SIZE_SHIFT;     
+static __u32   IMR_ZONE_SIZE_SHIFT;     /* 未来用DEFAULT值来赋值，也可以通过配置改变 */
 static __u32   IMR_BLOCK_SIZE_SHIFT;
 
 static __u32 IMR_TOP_TRACK_SIZE = 456;      /* number of blocks/topTrack  456 */
 static __u32 IMR_BOTTOM_TRACK_SIZE = 568;   /* number of blocks/bottomTrack  568 */
 
-__u32 VERSION = IMRSIM_VERSION(1,0,0);      /* The version number of IMRSIM：VERSION(x,y,z)=>((x<<16)|(y<<8)|z) */
+__u32 VERSION = IMRSIM_VERSION(1,0,0);      /* IMRSIM的版本号，表示方式：VERSION(x,y,z)=>((x<<16)|(y<<8)|z) */
 
-struct imrsim_c{             /* Mapped devices in the Device Mapper framework, also known as logical devices. */
+struct imrsim_c{             /* Device Mapper框架中的映射设备，也称为逻辑设备 */
     struct dm_dev *dev;      /* block device */
     sector_t       start;    /* starting address */
 };
 
-/* Mutex resource locks */
+/* 互斥资源锁 */
 struct mutex                     imrsim_zone_lock;
 struct mutex                     imrsim_ioctl_lock;
 
-/* IMRSIM Statistics */
+/* IMRSIM统计信息 */
 static struct imrsim_state       *zone_state = NULL;
-/* Array of zone status information */
+/* zone状态信息数组 */
 static struct imrsim_zone_status *zone_status = NULL;
 
-/* error log */
+/* 错误日志信息 */
 static __u32 imrsim_dbg_rerr;
 static __u32 imrsim_dbg_werr;
 static __u32 imrsim_dbg_log_enabled = 0;
 static unsigned long imrsim_dev_idle_checkpoint = 0;
 
-/* Multi-device support, currently not supported */
+/* 多设备支持，目前不支持 */
 int imrsim_single = 0;
 
-/* Constants representing configuration changes */
+/* IMRSIM配置变化常量 */
 enum imrsim_conf_change{
     IMR_NO_CHANGE     = 0x00,
     IMR_CONFIG_CHANGE = 0x01,
@@ -84,17 +84,17 @@ enum imrsim_conf_change{
     IMR_STATUS_CHANGE = 0x04
 };
 
-/* persistent storage */
+/* 存储持久化相关信息 */
 #define IMR_PSTORE_PG_EDG 92
 #define IMR_PSTORE_PG_OFF 40
 #define IMR_PSTORE_CHECK  1000
 #define IMR_PSTORE_QDEPTH 128
 #define IMR_PSTORE_PG_GAP 2
 
-/* persistent storage task structure */
+/* 存储持久化task信息结构体 */
 static struct imrsim_pstore_task
 {
-    struct task_struct  *pstore_thread;
+    struct task_struct  *pstore_thread; 
     __u32                sts_zone_idx;
     __u32                stu_zone_idx[IMR_PSTORE_QDEPTH];
     __u8                 stu_zone_idx_cnt;
@@ -103,28 +103,31 @@ static struct imrsim_pstore_task
     unsigned char        flag;              /* three bit for imrsim_conf_change */
 }imrsim_ptask;
 
-/* RMW scheme structure */
+/* RMW过程task信息结构体 */
 static struct imrsim_RMW_task
 {
+    struct task_struct  *task;
+    struct bio          *bio;
     sector_t            lba[2];
     __u8                lba_num;
 }imrsim_rmw_task;
 
-/* read/write completion structure */
+/* 同步控制结构体 */
 static struct imrsim_completion_control
 {
     struct completion   read_event;
-    struct completion   write_event;    
+    struct completion   write_event;
+    struct completion   rmw_event;
 }imrsim_completion;
 
-/* To get the size of the imrsim_stats structure. */
+/* 获取imrsim_stats结构体的大小 */
 static __u32 imrsim_stats_size(void)
 {
-    return (sizeof(struct imrsim_dev_stats) + sizeof(__u32) +
+    return (sizeof(struct imrsim_dev_stats) + sizeof(__u32) + sizeof(__u64)*2 +
             sizeof(struct imrsim_zone_stats) * IMR_NUMZONES);
 }
 
-/* To get the size of the imrsim_state structure. */
+/* 获取imrsim_state结构体的大小 */
 static __u32 imrsim_state_size(void)
 {
     return (sizeof(struct imrsim_state_header) + 
@@ -135,18 +138,18 @@ static __u32 imrsim_state_size(void)
             sizeof(__u32));
 }
 
-/* To get how many sectors a zone has. */
+/* 获取一个zone有多少个扇区 */
 static __u32 num_sectors_zone(void)
 {
     return (1 << IMR_BLOCK_SIZE_SHIFT << IMR_ZONE_SIZE_SHIFT);
 }
 
-/* To get the sector address where the zone starts. */
+/* 获取zone起始的扇区地址 */
 static __u64 zone_idx_lba(__u64 idx){
     return (idx << IMR_BLOCK_SIZE_SHIFT << IMR_ZONE_SIZE_SHIFT);
 }
 
-/* Returns the exponent of a power of 2. */
+/* 返回2次幂数的指数 */
 static __u64 index_power_of_2(__u64 num)
 {
     __u64 index = 0;
@@ -156,7 +159,7 @@ static __u64 index_power_of_2(__u64 num)
     return index;
 }
 
-/* Device idle time initialization. */
+/* 设备空闲时间初始化 */
 static void imrsim_dev_idle_init(void)
 {
     imrsim_dev_idle_checkpoint = jiffies;
@@ -164,7 +167,7 @@ static void imrsim_dev_idle_init(void)
     zone_state->stats.dev_stats.idle_stats.dev_idle_time_min = jiffies / HZ;
 }
 
-/* Basic information for initializing zone. */
+/* 初始化zone的基本信息 */
 static void imrsim_init_zone_default(__u64 sizedev)   /* sizedev: in sectors */
 {
     IMR_CAPACITY = sizedev;
@@ -176,28 +179,31 @@ static void imrsim_init_zone_default(__u64 sizedev)   /* sizedev: in sectors */
         IMR_NUMZONES, sizedev); 
 }
 
-/* Basic information for initializing the device state (zone_state) */
+/* 初始化设备状态(zone_state)的基本信息 */
 static void imrsim_init_zone_state_default(__u32 state_size)
 {
     __u32 i;
     __u32 j;
-    __u32 *magic;   /* magic number to identify the device (equipment identity) */
+    //__u32 n;
+    __u32 *magic;   /* magic number to identify the device（设备标识） */
 
-    /* head info. */
+    /* 头部信息 */
     zone_state->header.magic = 0xBEEFBEEF;
     zone_state->header.length = state_size;
     zone_state->header.version = VERSION;
     zone_state->header.crc32 = 0;
 
-    /* config info. */
+    /* 配置信息 */
     zone_state->config.dev_config.out_of_policy_read_flag = 0;
     zone_state->config.dev_config.out_of_policy_write_flag = 0;
     zone_state->config.dev_config.r_time_to_rmw_zone = IMR_TRANSFER_PENALTY;
     zone_state->config.dev_config.w_time_to_rmw_zone = IMR_TRANSFER_PENALTY;
 
     zone_state->stats.num_zones = IMR_NUMZONES;
-    imrsim_reset_stats();    
-    /* To allocate space for the zone_status array and initialize it. */
+    zone_state->stats.extra_write_total = 0;
+    zone_state->stats.write_total = 0;
+    imrsim_reset_stats();     /* 重置统计信息 */
+    /* 为zone状态数组分配空间，并初始化 */
     zone_status = (struct imrsim_zone_status *)&zone_state->stats.zone_stats[IMR_NUMZONES];
     for(i=0; i<IMR_NUMZONES; i++){
         zone_status[i].z_start = i;
@@ -207,6 +213,9 @@ static void imrsim_init_zone_state_default(__u32 state_size)
         zone_status[i].z_flag = 0;
         for(j=0;j<TOP_TRACK_NUM_TOTAL;j++){
             memset(zone_status[i].z_tracks[j].isUsedBlock,0,IMR_TOP_TRACK_SIZE*sizeof(__u8));
+            // for(n=0;n<IMR_TOP_TRACK_SIZE;n++){
+            //     zone_status[i].z_tracks[j].isUsedBlock[n]=0;
+            // }
         }
         zone_status[i].z_map_size = 0;
         memset(zone_status[i].z_pba_map,-1,TOP_TRACK_NUM_TOTAL*(IMR_TOP_TRACK_SIZE+IMR_BOTTOM_TRACK_SIZE)*sizeof(int));
@@ -216,7 +225,7 @@ static void imrsim_init_zone_state_default(__u32 state_size)
     *magic = 0xBEEFBEEF;
 }
 
-/* To initial a device. */
+/* 设备初始化方法 */
 int imrsim_init_zone_state(__u64 sizedev)
 {
     __u32 state_size;
@@ -225,23 +234,23 @@ int imrsim_init_zone_state(__u64 sizedev)
         printk(KERN_ERR "imrsim: zero capacity detected\n");
         return -EINVAL;
     }
-    imrsim_init_zone_default(sizedev);      /* Initialize the basic information of the zone. */
-    /* zone_state should not have allocated space, if it already exists, reclaim the space. */
+    imrsim_init_zone_default(sizedev);      /* 初始化zone基本信息 */
+    // zone_state应该还未分配空间，若已经存在了就要先收回空间
     if(zone_state){
         vfree(zone_state);
     }
     state_size = imrsim_state_size();
-    zone_state = vzalloc(state_size);     /* Allocate memory space for zone_state */
+    zone_state = vzalloc(state_size);     /* 为zone_state分配内存空间 */
     if(!zone_state){
         printk(KERN_ERR "imrsim: memory alloc failed for zone state\n");
         return -ENOMEM;
     }
-    imrsim_init_zone_state_default(state_size);   
-    imrsim_dev_idle_init();       
+    imrsim_init_zone_state_default(state_size);   /* 初始化zone_state基本信息 */
+    imrsim_dev_idle_init();       /* 设备空间时间初始化 */
     return 0;
 }
 
-/* read completion */
+/* 读同步 */
 static void imrsim_read_completion(struct bio *bio, int err)
 {
     if(err){
@@ -249,11 +258,10 @@ static void imrsim_read_completion(struct bio *bio, int err)
     }
     if(bio){
         complete((struct completion *)bio->bi_private);
-        printk(KERN_INFO "imrsim: ----release read completion---- \n");
     }
 }
 
-/* write completion */
+/* 写同步 */
 static void imrsim_write_completion(struct bio *bio, int err)
 {
     if(err){
@@ -264,11 +272,19 @@ static void imrsim_write_completion(struct bio *bio, int err)
     }
 }
 
-/* read page (for meta-data) */
+/* 获取设备映射偏移 */
+static sector_t imrsim_map_sector(struct dm_target *ti, 
+                                  sector_t bi_sector)
+{
+    struct imrsim_c *c = ti->private;
+    return c->start + dm_target_offset(ti, bi_sector);
+}
+
+/* 读page: 元数据读，RMW过程中的R */
 static int imrsim_read_page(struct block_device *dev, sector_t lba,
                             int size, struct page *page)
 {
-    //dump_stack();   // #include<asm/ptrace.h> Debugging: View function call stacks
+    //dump_stack();   // #include<asm/ptrace.h> 打印函数调用关系
     int ret = 0;
     struct bio *bio = bio_alloc(GFP_NOIO, 1);
 
@@ -286,7 +302,6 @@ static int imrsim_read_page(struct block_device *dev, sector_t lba,
     init_completion(&imrsim_completion.read_event);
     bio->bi_private = &imrsim_completion.read_event;
     bio->bi_end_io = imrsim_read_completion;
-    printk(KERN_INFO "imrsim: read page progress 1\n");
     submit_bio(READ | REQ_SYNC, bio);
     wait_for_completion(&imrsim_completion.read_event);
     ret = test_bit(BIO_UPTODATE, &bio->bi_flags);
@@ -295,11 +310,10 @@ static int imrsim_read_page(struct block_device *dev, sector_t lba,
         ret = -EIO;
     }
     bio_put(bio);
-    printk(KERN_INFO "imrsim: read page progress 2\n");
     return ret;
 }
 
-/* write page (for meta-data) */
+/* 写page：元数据写/刷新，RMW过程中的W */
 static int imrsim_write_page(struct block_device *dev, sector_t lba,
                             __u32 size, struct page *page)
 {
@@ -331,42 +345,114 @@ static int imrsim_write_page(struct block_device *dev, sector_t lba,
     return ret;
 }
 
-/* RMW event caused by bottom track update */
-static void imrsim_rmw_process(struct bio *bio)
+static void imrsim_end_rmw(struct bio *bio, int err)
 {
-    __u64       lba;
-    void        *page_addr;
-    struct page *page;  // During the RMW process, for the extra overhead of the block, use the page to back up the data
+    int i;
+    //struct bio_vec *bvec;
 
     if(bio){
-        __u8 i;
-        for(i=0;i<imrsim_rmw_task.lba_num;i++)
+        // if(bio_data_dir(bio) == WRITE){
+        //     printk(KERN_INFO "imrsim: release pages.\n");
+        //     bio_for_each_segment_all(bvec, bio, i)
+        //         __free_page(bvec->bv_page);
+        // }
+        // if(bio_data_dir(bio) == READ){
+        //     printk(KERN_INFO "imrsim: read bio end.\n");
+        // }
+        complete((struct completion *)bio->bi_private);   // rmw 同步控制
+        bio_put(bio);
+    }
+}
+
+int read_modify_write_task(void *arg)
+{
+    
+    struct dm_target * ti = (struct dm_target *)arg;
+    struct imrsim_c *c = ti->private;
+    __u8 i;
+    __u8 n = imrsim_rmw_task.lba_num;
+    struct page *pages[2];
+    void  *page_addrs[2];
+
+    if(imrsim_rmw_task.bio)
+    {
+        printk(KERN_INFO "imrsim: enter rmw process and back up\n");
+        // 读取需要备份的数据块
+        for(i=0; i<n; i++)
         {
-            // redistribute bio (R and W option to the top track)
-            lba = imrsim_rmw_task.lba[i];
-            printk(KERN_INFO "imrsim: rmw process %u lba: %llu.\n", i,lba>>IMR_BLOCK_SIZE_SHIFT);
-            page = alloc_pages(GFP_KERNEL,0);
-            if(!page){
+            pages[i] = alloc_page(GFP_KERNEL);
+            if(!pages[i]){
                 printk(KERN_ERR "imrsim: no enough memory to allocate a page\n");
                 return -ENOMEM;
             }
-            page_addr = page_address(page);
-            if(!page_addr){
-                printk(KERN_ERR "imrsim: write page vm addr null\n");
-                __free_pages(page,0);
-                return -EINVAL;
+            page_addrs[i] = page_address(pages[i]);
+            if(!page_addrs[i]){
+                printk(KERN_ERR "imrsim: read page vm addr null\n");
+                __free_page(pages[i]);
             }
-            memset(page_addr, 0, PAGE_SIZE);
-            imrsim_read_page(bio->bi_bdev, lba, PAGE_SIZE, page);
-            // imrsim_write_page(bio->bi_bdev, lba, PAGE_SIZE, page);
-            __free_pages(page, 0);
+            //printk(KERN_INFO "imrsim: page_addr:0x%lx\n", page_addrs[i]);
+            memset(page_addrs[i], 0, PAGE_SIZE);
+            struct bio *rbio = bio_alloc(GFP_NOIO, 1);
+            init_completion(&imrsim_completion.read_event);
+            rbio->bi_private = &imrsim_completion.read_event;
+            rbio->bi_bdev = c->dev->bdev;
+            rbio->bi_iter.bi_sector = imrsim_map_sector(ti, imrsim_rmw_task.lba[i]);
+            rbio->bi_end_io = imrsim_end_rmw;
+            bio_add_page(rbio, pages[i], PAGE_SIZE, 0);
+            submit_bio(READ | REQ_SYNC, rbio);
+            wait_for_completion(&imrsim_completion.read_event);
+            cond_resched();
         }
-        imrsim_rmw_task.lba_num=0;
+
+        printk(KERN_INFO "imrsim: write bio.\n");
+        // 写当前lba
+        submit_bio(WRITE_FUA, imrsim_rmw_task.bio);
+        cond_resched();
+
+        printk(KERN_INFO "imrsim: write back.\n");
+        // 写回备份的数据
+        for(i=0; i<n; i++)
+        {
+            struct bio *wbio = bio_alloc(GFP_NOIO, 1);
+            init_completion(&imrsim_completion.write_event);
+            wbio->bi_private = &imrsim_completion.write_event;
+            wbio->bi_bdev = c->dev->bdev;
+            wbio->bi_iter.bi_sector = imrsim_map_sector(ti, imrsim_rmw_task.lba[i]);
+            wbio->bi_end_io = imrsim_end_rmw;
+            bio_add_page(wbio, pages[i], PAGE_SIZE, 0);
+            submit_bio(WRITE_FUA, wbio);
+            wait_for_completion(&imrsim_completion.write_event);
+            cond_resched();
+        }
+
+        // 释放页
+        for(i=0; i<n; i++)
+        {
+            __free_page(pages[i]);
+        }
+        printk(KERN_INFO "imrsim: release pages.\n");
+        imrsim_rmw_task.lba_num = 0;
+        complete(&imrsim_completion.rmw_event);   // rmw 同步控制
+    }
+    return 0;
+}
+
+/* 更新底部导致的RMW事件，对块4k进行操作 */
+void imrsim_rmw_thread(struct dm_target *ti)
+{
+    imrsim_rmw_task.task = kthread_create(read_modify_write_task, ti, "rmw thread");
+    if(imrsim_rmw_task.task){
+        printk(KERN_INFO "imrsim: rmw thread created : %d.\n", imrsim_rmw_task.task->pid);
+        init_completion(&imrsim_completion.rmw_event);
+        wake_up_process(imrsim_rmw_task.task);
+        wait_for_completion(&imrsim_completion.rmw_event);
+        //kthread_stop(imrsim_rmw_task.task);
+        printk(KERN_INFO "imrsim: rmw task end.\n");
     }
 }
 
 
-/* To get page number and next page. */
+/* 获取页号以及下一页 */
 static __u32 imrsim_pstore_pg_idx(__u32 idx, __u32 *pg_nxt)
 {
     __u32 tmp = IMR_PSTORE_PG_OFF + sizeof(struct imrsim_zone_stats)*idx;
@@ -376,7 +462,7 @@ static __u32 imrsim_pstore_pg_idx(__u32 idx, __u32 *pg_nxt)
     return pg_cur;
 }
 
-/* Persistent storage - handled in a variety of cases depending on the type of metadata change.*/
+/* 将内存中的元数据下盘（持久化存储） - 根据元数据改变的类型分多种情况来处理*/
 static int imrsim_flush_persistence(struct dm_target *ti)
 {
     void             *page_addr;
@@ -409,7 +495,7 @@ static int imrsim_flush_persistence(struct dm_target *ti)
     memcpy(page_addr, (unsigned char *)zone_state, PAGE_SIZE);
     imrsim_write_page(zdev->dev->bdev, imrsim_ptask.pstore_lba, PAGE_SIZE, page);
 
-    /* Handling of Disk Statistics Changes. */
+    /* 磁盘统计信息改变的处理 */
     if(imrsim_ptask.flag &= IMR_STATS_CHANGE){
         imrsim_ptask.flag &= ~IMR_STATS_CHANGE;
         if(imrsim_ptask.sts_zone_idx > IMR_PSTORE_PG_EDG){
@@ -424,7 +510,7 @@ static int imrsim_flush_persistence(struct dm_target *ti)
         }
     }
 
-    /* Handling of disk state changes. */
+    /* 磁盘状态改变的处理 */
     if(imrsim_ptask.flag &= IMR_STATUS_CHANGE){
         imrsim_ptask.flag &= ~IMR_STATUS_CHANGE;
         for(qidx = 0; qidx < imrsim_ptask.stu_zone_idx_cnt; qidx++){
@@ -448,7 +534,7 @@ static int imrsim_flush_persistence(struct dm_target *ti)
     return 0;
 }
 
-/* To persist meta-data. */
+/* 将元数据持久化 */
 static int imrsim_save_persistence(struct dm_target *ti)
 {
     void             *page_addr;
@@ -494,7 +580,7 @@ static int imrsim_save_persistence(struct dm_target *ti)
     return 0;
 }
 
-/* To load metadata from persistent storage. */
+/* 加载持久存储中的元数据 */
 static int imrsim_load_persistence(struct dm_target *ti)
 {
     __u64            sizedev;
@@ -512,7 +598,7 @@ static int imrsim_load_persistence(struct dm_target *ti)
     zdev = ti->private;
     sizedev = ti->len;
     imrsim_init_zone_default(sizedev);
-    /* The starting address for persistent storage. */
+    /* 持久存储的起始地址 */
     imrsim_ptask.pstore_lba = IMR_NUMZONES_DEFAULT
                               << IMR_ZONE_SIZE_SHIFT_DEFAULT
                               << IMR_BLOCK_SIZE_SHIFT_DEFAULT;
@@ -579,7 +665,7 @@ static int imrsim_load_persistence(struct dm_target *ti)
     return -EINVAL;
 }
 
-/* persistent storage task */
+/* 持久化存储task */
 static int imrsim_persistence_task(void *arg)
 {
     struct dm_target *ti = (struct dm_target *)arg;
@@ -612,7 +698,7 @@ static int imrsim_persistence_task(void *arg)
     return 0;
 }
 
-/* persistent storage thread */
+/* 持久化存储线程 */
 static int imrsim_persistence_thread(struct dm_target *ti)
 {
     int ret = 0;
@@ -621,8 +707,6 @@ static int imrsim_persistence_thread(struct dm_target *ti)
         printk(KERN_ERR "imrsim: warning: null device target. Improper usage\n");
         return -EINVAL;
     }
-    //init_completion(&imrsim_ptask.read_event);
-    //init_completion(&imrsim_ptask.write_event);
     imrsim_ptask.flag = 0;
     imrsim_ptask.stu_zone_idx_cnt = 0;
     imrsim_ptask.stu_zone_idx_gap = 0;
@@ -631,7 +715,7 @@ static int imrsim_persistence_thread(struct dm_target *ti)
     if(ret){
         imrsim_save_persistence(ti);
     }
-    // create thread
+    // 创建线程
     imrsim_ptask.pstore_thread = kthread_create(imrsim_persistence_task, 
                                                 ti, "imrsim pthread");
     if(imrsim_ptask.pstore_thread){
@@ -645,7 +729,7 @@ static int imrsim_persistence_thread(struct dm_target *ti)
     return 0;
 }
 
-/* To update device idle time. */
+/* 更新设备空闲时间 */
 static void imrsim_dev_idle_update(void)
 {
     __u32 dt = 0;
@@ -661,7 +745,7 @@ static void imrsim_dev_idle_update(void)
    }
 }
 
-/* status report */
+/* 状态汇报方法 */
 static void imrsim_report_stats(struct imrsim_stats *stats)
 {
     __u32 i;
@@ -682,16 +766,19 @@ static void imrsim_report_stats(struct imrsim_stats *stats)
                     i, stats->zone_stats[i].out_of_policy_write_stats.span_zones_count);
         printk("zone[%u] imrsim out of policy write stats: unaligned count: %u\n",
                     i, stats->zone_stats[i].out_of_policy_write_stats.unaligned_count);
-        printk("zone[%u] imrsim rewrite_total count: %u\n",
-                    i, stats->zone_stats[i].rewrite_total); 
-        printk("zone[%u] imrsim rewrite_single count: %u\n",
-                    i, stats->zone_stats[i].rewrite_single);    
+        printk("zone[%u] extra write count: %u\n",
+                    i, stats->zone_stats[i].z_extra_write_total);    
+        printk("zone[%u] write total count: %u\n",
+                    i, stats->zone_stats[i].z_write_total); 
     }
+
+    printk("imrsim extra write total count: %llu\n", stats->extra_write_total);
+    printk("imrsim write total count: %llu\n", stats->write_total);
 }
 
-/* The following are interface methods with EXPORT_SYMBOL. */
+/* 具有EXPORT_SYMBOL的都是接口方法 */
 
-/* To get the last read error. */
+/* 获取最近一个读错误 */
 int imrsim_get_last_rd_error(__u32 *last_error)
 {
     __u32 tmperr = imrsim_dbg_rerr;
@@ -704,7 +791,7 @@ int imrsim_get_last_rd_error(__u32 *last_error)
 }
 EXPORT_SYMBOL(imrsim_get_last_rd_error);
 
-/* To get the last write error. */
+/* 获取最近一个写错误 */
 int imrsim_get_last_wd_error(__u32 *last_error)
 {
    __u32 tmperr = imrsim_dbg_werr;
@@ -716,7 +803,7 @@ int imrsim_get_last_wd_error(__u32 *last_error)
 }
 EXPORT_SYMBOL(imrsim_get_last_wd_error);
 
-/* Enable logging. */
+/* 开启日志功能 */
 int imrsim_set_log_enable(__u32 zero_is_disable)
 {
    imrsim_dbg_log_enabled = zero_is_disable;
@@ -724,7 +811,7 @@ int imrsim_set_log_enable(__u32 zero_is_disable)
 }
 EXPORT_SYMBOL(imrsim_set_log_enable);
 
-/* Disable logging. */
+/* 关闭日志功能 */
 int imrsim_get_num_zones(__u32* num_zones)
 {
    printk(KERN_INFO "imrsim: %s: called.\n", __FUNCTION__);
@@ -739,7 +826,7 @@ int imrsim_get_num_zones(__u32* num_zones)
 }
 EXPORT_SYMBOL(imrsim_get_num_zones);
 
-/* To get the number of sectors in a zone. */
+/* 获取一个zone的扇区数 */
 int imrsim_get_size_zone_default(__u32 *size_zone)
 {
     printk(KERN_INFO "imrsim: %s called.\n", __FUNCTION__);
@@ -754,7 +841,7 @@ int imrsim_get_size_zone_default(__u32 *size_zone)
 }
 EXPORT_SYMBOL(imrsim_get_size_zone_default);
 
-/* To set the default zone size. */
+/* 设置默认zone大小 */
 int imrsim_set_size_zone_default(__u32 size_zone)
 {
     struct imrsim_state *sta_tmp;
@@ -781,7 +868,7 @@ int imrsim_set_size_zone_default(__u32 size_zone)
 }
 EXPORT_SYMBOL(imrsim_set_size_zone_default);
 
-/* To reset default config. */
+/* 重置默认配置 */
 int imrsim_reset_default_config(void)
 {
     printk(KERN_INFO "imrsim: %s called.\n", __FUNCTION__);
@@ -791,7 +878,7 @@ int imrsim_reset_default_config(void)
 }
 EXPORT_SYMBOL(imrsim_reset_default_config);
 
-/* To reset default device config. */
+/* 重置默认设备配置 */
 int imrsim_reset_default_device_config(void)
 {
     printk(KERN_INFO "imrsim: %s called.\n", __FUNCTION__);
@@ -805,7 +892,7 @@ int imrsim_reset_default_device_config(void)
 }
 EXPORT_SYMBOL(imrsim_reset_default_device_config);
 
-/* To get device config. */
+/* 获取设备配置 */
 int imrsim_get_device_config(struct imrsim_dev_config *device_config)
 {
     printk(KERN_INFO "imrsim: %s called.\n", __FUNCTION__);
@@ -821,7 +908,7 @@ int imrsim_get_device_config(struct imrsim_dev_config *device_config)
 }
 EXPORT_SYMBOL(imrsim_get_device_config);
 
-/* To set device read config. */
+/* 设置设备读配置 */
 int imrsim_set_device_rconfig(struct imrsim_dev_config *device_config)
 {
     printk(KERN_INFO "imrsim: %s called.\n", __FUNCTION__);
@@ -837,7 +924,7 @@ int imrsim_set_device_rconfig(struct imrsim_dev_config *device_config)
 }
 EXPORT_SYMBOL(imrsim_set_device_rconfig);
 
-/* To set device write config. */
+/* 设置设备写配置 */
 int imrsim_set_device_wconfig(struct imrsim_dev_config *device_config)
 {
     printk(KERN_INFO "imrsim: %s called.\n", __FUNCTION__);
@@ -853,7 +940,7 @@ int imrsim_set_device_wconfig(struct imrsim_dev_config *device_config)
 }
 EXPORT_SYMBOL(imrsim_set_device_wconfig);
 
-/* To set read delay. */
+/* 设置设备读延迟 */
 int imrsim_set_device_rconfig_delay(struct imrsim_dev_config *device_config)
 {
     printk(KERN_INFO "imrsim: %s called.\n", __FUNCTION__);
@@ -873,7 +960,7 @@ int imrsim_set_device_rconfig_delay(struct imrsim_dev_config *device_config)
 }
 EXPORT_SYMBOL(imrsim_set_device_rconfig_delay);
 
-/* To set write delay. */
+/* 设置设备写延迟 */
 int imrsim_set_device_wconfig_delay(struct imrsim_dev_config *device_config)
 {
     printk(KERN_INFO "imrsim: %s called.\n", __FUNCTION__);
@@ -893,7 +980,7 @@ int imrsim_set_device_wconfig_delay(struct imrsim_dev_config *device_config)
 }
 EXPORT_SYMBOL(imrsim_set_device_wconfig_delay);
 
-/* To reset default zone config. */
+/* 重置默认zone配置 */
 int imrsim_reset_default_zone_config(void)
 {
     struct imrsim_state *sta_tmp;
@@ -915,7 +1002,7 @@ int imrsim_reset_default_zone_config(void)
 }
 EXPORT_SYMBOL(imrsim_reset_default_zone_config);
 
-/* To clear config of a zone. */
+/* 清空zone配置 */
 int imrsim_clear_zone_config(void)
 {
     printk(KERN_INFO "imrsim: %s called.\n", __FUNCTION__);
@@ -930,7 +1017,7 @@ int imrsim_clear_zone_config(void)
 }
 EXPORT_SYMBOL(imrsim_clear_zone_config);
 
-/* Count the number of Z_TYPE_SEQUENTIAL type zones. @Deprecated */
+/* 统计Z_TYPE_SEQUENTIAL类型zone的数目 */
 static int imrsim_zone_seq_count(void)
 {
     __u32 count = 0;
@@ -944,7 +1031,7 @@ static int imrsim_zone_seq_count(void)
     return count;
 }
 
-/* To check if the zone status is correct. */
+/* 检查zone状态是否正确 */
 static int imrsim_zone_cond_check(__u16 cond)
 {
     switch(cond){
@@ -961,7 +1048,7 @@ static int imrsim_zone_cond_check(__u16 cond)
     return 0;
 }
 
-/* To modify zone configuration. @Deprecated */
+/* 修改zone配置 @Deprecated */
 int imrsim_modify_zone_config(struct imrsim_zone_status *z_status)
 {
     __u32 count = imrsim_zone_seq_count();
@@ -1016,7 +1103,7 @@ int imrsim_modify_zone_config(struct imrsim_zone_status *z_status)
 }
 EXPORT_SYMBOL(imrsim_modify_zone_config);
 
-/* To add zone configuration. @Deprecated */
+/* 添加zone配置 @Deprecated */
 int imrsim_add_zone_config(struct imrsim_zone_status *zone_sts)
 {
     printk(KERN_INFO "imrsim: %s called.\n", __FUNCTION__);
@@ -1060,7 +1147,7 @@ int imrsim_add_zone_config(struct imrsim_zone_status *zone_sts)
 }
 EXPORT_SYMBOL(imrsim_add_zone_config);
 
-/* To reset statistics for a zone. */
+/* 重置某个zone的统计信息 */
 int imrsim_reset_zone_stats(sector_t start_sector)
 {
     __u32 zone_idx = start_sector >> IMR_BLOCK_SIZE_SHIFT >> IMR_ZONE_SIZE_SHIFT;
@@ -1074,26 +1161,28 @@ int imrsim_reset_zone_stats(sector_t start_sector)
           0, sizeof(struct imrsim_out_of_policy_read_stats));
     memset(&(zone_state->stats.zone_stats[zone_idx].out_of_policy_write_stats),
           0, sizeof(struct imrsim_out_of_policy_write_stats));
-    memset(&(zone_state->stats.zone_stats[zone_idx].rewrite_total),
+    memset(&(zone_state->stats.zone_stats[zone_idx].z_extra_write_total),
           0, sizeof(__u32));
-    memset(&(zone_state->stats.zone_stats[zone_idx].rewrite_single),
+    memset(&(zone_state->stats.zone_stats[zone_idx].z_write_total),
           0, sizeof(__u32));
     return 0;
 }
 EXPORT_SYMBOL(imrsim_reset_zone_stats);
 
-/* To reset zone_stats. */
+/* 重置zone_stats */
 int imrsim_reset_stats(void)
 {
     printk(KERN_INFO "imrsim: %s: called.\n", __FUNCTION__);
     memset(&zone_state->stats.dev_stats.idle_stats, 0, sizeof(struct imrsim_idle_stats));
+    memset(&zone_state->stats.extra_write_total, 0, sizeof(__u64));
+    memset(&zone_state->stats.write_total, 0, sizeof(__u64));
     memset(zone_state->stats.zone_stats, 0, zone_state->stats.num_zones * 
           sizeof(struct imrsim_zone_stats));
     return 0;
 }
 EXPORT_SYMBOL(imrsim_reset_stats);
 
-/* To get zone_stats. */
+/* 获取zone_stats */
 int imrsim_get_stats(struct imrsim_stats *stats)
 {
     printk(KERN_INFO "imrsim: %s called.\n", __FUNCTION__);
@@ -1106,7 +1195,7 @@ int imrsim_get_stats(struct imrsim_stats *stats)
 }
 EXPORT_SYMBOL(imrsim_get_stats);
 
-/* @Deprecated */
+/* 块设备重置zone指针 @Deprecated */
 int imrsim_blkdev_reset_zone_ptr(sector_t start_sector)
 {
     //__u32 rem;
@@ -1130,7 +1219,7 @@ int imrsim_blkdev_reset_zone_ptr(sector_t start_sector)
 }
 EXPORT_SYMBOL(imrsim_blkdev_reset_zone_ptr);
 
-/* error log */
+/* 错误日志 */
 void imrsim_log_error(struct bio* bio, __u32 uerr)
 {
     __u64 lba;
@@ -1181,8 +1270,8 @@ void imrsim_log_error(struct bio* bio, __u32 uerr)
     }
 }
 
-/* The following is the relevant method to build the target_type structure. */
-/* device creation */
+/* 下面是构建target_type结构体的相关方法 */
+/* 设备创建 */
 static int imrsim_ctr(struct dm_target *ti,
                       unsigned int argc,
                       char **argv)
@@ -1210,13 +1299,13 @@ static int imrsim_ctr(struct dm_target *ti,
         ti->error = "dm-imrsim: error: invalid argument device sector";
         return -EINVAL;
     }
-    c = kmalloc(sizeof(*c), GFP_KERNEL);    // To allocate physically contiguous memory.
+    c = kmalloc(sizeof(*c), GFP_KERNEL);    // 分配物理连续的内存
     if(!c){
         ti->error = "dm-imrsim: error: no enough memory";
         return -ENOMEM;
     }
     c->start = tmp;
-    // Fill in the bdev of the device specified by path and the corresponding interval, permission, mode, etc. into ti->table.
+    // 将path所指定设备的bdev以及对应区间，权限，模式等填入ti->table中
     iRet = dm_get_device(ti, argv[0], dm_table_get_mode(ti->table), &c->dev);
     if(iRet){
         ti->error = "dm-imrsim: error: device lookup failed";
@@ -1243,7 +1332,7 @@ static int imrsim_ctr(struct dm_target *ti,
    imrsim_dbg_rerr = imrsim_dbg_werr = imrsim_dbg_log_enabled = 0;
    mutex_init(&imrsim_zone_lock);
    mutex_init(&imrsim_ioctl_lock);
-   // To open a persistent thread.
+   /* 开启新线程，持久化元数据 */
    if(imrsim_persistence_thread(ti)){
        printk(KERN_ERR "imrsim: error: metadata will not be persisted\n");
    }
@@ -1251,12 +1340,12 @@ static int imrsim_ctr(struct dm_target *ti,
    return 0;
 }
 
-/* device destory */
+/* 设备销毁 */
 static void imrsim_dtr(struct dm_target *ti)
 {
     struct imrsim_c *c = (struct imrsim_c *) ti->private;
 
-    kthread_stop(imrsim_ptask.pstore_thread);   // To kill the persistent thread.
+    kthread_stop(imrsim_ptask.pstore_thread);   // 终止持久存储线程
     mutex_destroy(&imrsim_zone_lock);
     mutex_destroy(&imrsim_ioctl_lock);
     dm_put_device(ti, c->dev);
@@ -1266,244 +1355,233 @@ static void imrsim_dtr(struct dm_target *ti)
     printk(KERN_INFO "imrsim target destructed\n");
 }
 
-/* To get device mapping offset. */
-static sector_t imrsim_map_sector(struct dm_target *ti, 
-                                  sector_t bi_sector)
-{
-    struct imrsim_c *c = ti->private;
-    return c->start + dm_target_offset(ti, bi_sector);
-}
-
-/* Device Write Rules */
+/* 设备写规则检查 */
 int imrsim_write_rule_check(struct bio *bio, __u32 zone_idx,
                             sector_t bio_sectors, int policy_flag)
 {
     __u64  lba;
-    __u64  lba_offset;    // The offset of lba in the zone
-    __u64  block_offset;  // The offset of the block in the zone
+    __u64  lba_offset;    // lba在所在zone中的偏移
+    __u64  block_offset;  // block在所在zone中的偏移
     __u64  boundary;
     __u64  elba;
     __u64  zlba;
-    __u32  relocateTrackno;   // In a stage allocation, how many tracks are the relocated lba on?
+    __u32  relocateTrackno;   // 多阶段分配中，重定位的lba在多少号磁道上
     __u32  rv;       // rule violation
     __u32  z_size;
-    __u32  trackno;  // on the top-bottom track group
-    __u32  blockno;  // The number of the block corresponding to lba on the track
-    __u32  trackrate;  // Track ratio, p.s. linux kernel does not support floating point calculation.
+    __u32  trackno;  // 在第几个top-bottom磁道组上
+    __u32  blockno;  // lba对应的块在磁道上的第几号
+    __u32  trackrate;  // 磁道比例, 因为linux内核不支持浮点数计算，所以只能放大倍数
     __u16  wa_penalty;
     __u8   isTopTrack;
     __u8   rewriteSign;
-    __u8   ret=1;       // Determine whether the block requested by lba is in the mapping table.
+    __u8   ret=1;       // 判断lba请求的块是否在映射表中
 
     zlba = zone_idx_lba(zone_idx);
 
-    /* Relocate bio according to phase. */
-    #if LINUX_VERSION_CODE < KERNEL_VERSION(3, 14, 0)
-    switch(IMR_ALLOCATION_PHASE)
+    // 若bio->bi_private 等于 write_event 就不需要重定向bio
+    if(bio->bi_private != &imrsim_completion.write_event)
     {
-        case 1:
-            lba = bio->bi_sector;
-            break;
-        case 2:
-            lba = bio->bi_sector;
-            //printk(KERN_INFO "imrsim: request- lba(sectors) is %llu\n", lba);
-            lba_offset = bio->bi_sector - zlba;
-            block_offset = lba_offset >> IMR_BLOCK_SIZE_SHIFT;
-            //Check the mapping table, ret indicates whether the block where lba is located is in the mapping table
-            ret = zone_status[zone_idx].z_pba_map[block_offset]!=-1?1:0;
-            if(!ret){         // lba is not in the mapping table, indicating a new write operation
-                // Fill the mapping table, allocate tracks according to the stage, and write data
-                // Note: Multiply TOP_TRACK_NUM_TOTAL because the number of top and bottom tracks in the zone is equal
-                boundary = IMR_BOTTOM_TRACK_SIZE * TOP_TRACK_NUM_TOTAL;
-                if(zone_status[zone_idx].z_map_size < boundary){
-                    // Indicates that the relocated lba should be on the bottom track, in the first stage allocation
-                    isTopTrack = 0;
-                    // Judgment should be redirected to the first few bottom tracks
-                    relocateTrackno = zone_status[zone_idx].z_map_size / IMR_BOTTOM_TRACK_SIZE;
-                    // Get the pba corresponding to the bio starting lba
-                    bio->bi_sector = zlba  
-                        + (((relocateTrackno+1)*(IMR_TOP_TRACK_SIZE)+relocateTrackno*IMR_BOTTOM_TRACK_SIZE)<<IMR_BLOCK_SIZE_SHIFT) 
-                        + ((zone_status[zone_idx].z_map_size % IMR_BOTTOM_TRACK_SIZE) << IMR_BLOCK_SIZE_SHIFT);
-                    printk(KERN_INFO "imrsim: write_ops(bottom) on zone %u - start LBA is %llu, PBA is %llu\n", zone_idx, lba>>IMR_BLOCK_SIZE_SHIFT, bio->bi_iter.bi_sector>>IMR_BLOCK_SIZE_SHIFT);
-                    zone_status[zone_idx].z_pba_map[block_offset] = (bio->bi_sector - zlba) >> IMR_BLOCK_SIZE_SHIFT;
-                    zone_status[zone_idx].z_map_size++;
-                    lba = bio->bi_sector;
-                }else{
-                    // Indicates that the relocated lba should be on the top track, in a second stage allocation
-                    isTopTrack = 1;
-                    relocateTrackno = (zone_status[zone_idx].z_map_size - boundary) / IMR_TOP_TRACK_SIZE;
-                    bio->bi_sector = zlba
-                        + (relocateTrackno*(IMR_TOP_TRACK_SIZE+IMR_BOTTOM_TRACK_SIZE)<<IMR_BLOCK_SIZE_SHIFT)
-                        + (((zone_status[zone_idx].z_map_size - boundary) % IMR_TOP_TRACK_SIZE)<<IMR_BLOCK_SIZE_SHIFT);
-                    printk(KERN_INFO "imrsim: write_ops(top) on zone %u - start LBA is %llu, PBA is %llu\n", zone_idx, lba>>IMR_BLOCK_SIZE_SHIFT, bio->bi_iter.bi_sector>>IMR_BLOCK_SIZE_SHIFT);
-                    zone_status[zone_idx].z_pba_map[block_offset] = (bio->bi_sector - zlba) >> IMR_BLOCK_SIZE_SHIFT;
-                    zone_status[zone_idx].z_map_size++;
-                    lba = bio->bi_sector;
-                }
-            }else{            // lba is in the mapping table, indicating an update operation
-                // Get pba from the mapping table, modify lba in bio
-                bio->bi_sector = zlba + (zone_status[zone_idx].z_pba_map[block_offset] << IMR_BLOCK_SIZE_SHIFT);
-                printk(KERN_INFO "imrsim: update_ops on zone %u - start LBA is %llu, PBA is %llu\n", zone_idx, lba>>IMR_BLOCK_SIZE_SHIFT, bio->bi_iter.bi_sector>>IMR_BLOCK_SIZE_SHIFT);
+        /* 根据phase来重定位bio */
+        #if LINUX_VERSION_CODE < KERNEL_VERSION(3, 14, 0)
+        switch(IMR_ALLOCATION_PHASE)
+        {
+            /* -----------------------------待同步---------------------------------------- */
+            case 1:
                 lba = bio->bi_sector;
-            }
-            break;
-        case 3:
-            lba = bio->bi_sector;
-            lba_offset = bio->bi_sector - zlba;
-            block_offset = lba_offset >> IMR_BLOCK_SIZE_SHIFT;
-            ret = zone_status[zone_idx].z_pba_map[block_offset]!=-1?1:0;
-            if(!ret){         // a new write operation
-                boundary = IMR_BOTTOM_TRACK_SIZE * TOP_TRACK_NUM_TOTAL;
-                __u32 mapSize = zone_status[zone_idx].z_map_size;
-                if(mapSize < boundary){
-                    // first stage allocation
+                break;
+            case 2:
+                printk(KERN_INFO "imrsim: map- lba is %llu\n", bio->bio->bi_sector);
+                lba_offset = bio->bi_sector - zlba;
+                boundary = IMR_BOTTOM_TRACK_SIZE * TOP_TRACK_NUM_TOTAL << IMR_BLOCK_SIZE_SHIFT;
+                if(lba_offset < boundary){
+                    // 说明重定位的lba应该在底部磁道上，处于第一阶段分配中
+                    // 备注：乘TOP_TRACK_NUM_TOTAL是因为zone中顶部磁道和底部磁道数目相等
+                    // 判断应该在第几个底部磁道上
                     isTopTrack = 0;
-                    relocateTrackno = mapSize / IMR_BOTTOM_TRACK_SIZE;
-                    bio->bi_sector = zlba  
-                        + (((relocateTrackno+1)*(IMR_TOP_TRACK_SIZE)+relocateTrackno*IMR_BOTTOM_TRACK_SIZE)<<IMR_BLOCK_SIZE_SHIFT) 
-                        + ((mapSize % IMR_BOTTOM_TRACK_SIZE) << IMR_BLOCK_SIZE_SHIFT);
-                    printk(KERN_INFO "imrsim: write_ops_3(bottom) - start LBA is %llu, PBA is %llu\n", lba>>IMR_BLOCK_SIZE_SHIFT, bio->bi_iter.bi_sector>>IMR_BLOCK_SIZE_SHIFT);
-                    zone_status[zone_idx].z_pba_map[block_offset] = (bio->bi_sector - zlba) >> IMR_BLOCK_SIZE_SHIFT;
-                    zone_status[zone_idx].z_map_size++;
-                    lba = bio->bi_sector;
-                }else if(mapSize >= boundary 
-                    && mapSize < boundary + IMR_TOP_TRACK_SIZE*TOP_TRACK_NUM_TOTAL/2){
-                    // In second stage allocation Top(0,2,4,...)
-                    isTopTrack = 1;
-                    relocateTrackno = 2*((mapSize - boundary) / IMR_TOP_TRACK_SIZE);
-                    bio->bi_sector = zlba
-                        + (relocateTrackno*(IMR_TOP_TRACK_SIZE+IMR_BOTTOM_TRACK_SIZE)<<IMR_BLOCK_SIZE_SHIFT)
-                        + (((mapSize - boundary) % IMR_TOP_TRACK_SIZE) << IMR_BLOCK_SIZE_SHIFT);
-                    printk(KERN_INFO "imrsim: write_ops_3(top_1) - start LBA is %llu, PBA is %llu\n", lba>>IMR_BLOCK_SIZE_SHIFT, bio->bi_iter.bi_sector>>IMR_BLOCK_SIZE_SHIFT);
-                    zone_status[zone_idx].z_pba_map[block_offset] = (bio->bi_sector - zlba) >> IMR_BLOCK_SIZE_SHIFT;
-                    zone_status[zone_idx].z_map_size++;
-                    lba = bio->bi_sector;
+                    relocateTrackno = lba_offset / (IMR_BOTTOM_TRACK_SIZE << IMR_BLOCK_SIZE_SHIFT);
+                    lba_offset = lba_offset % (IMR_BOTTOM_TRACK_SIZE << IMR_BLOCK_SIZE_SHIFT);
+                    bio->bio->bi_sector = zlba
+                        + (((relocateTrackno+1)*(IMR_TOP_TRACK_SIZE)+relocateTrackno*IMR_BOTTOM_TRACK_SIZE)<<IMR_BLOCK_SIZE_SHIFT)
+                        + lba_offset;
+                    lba = bio->bio->bi_sector;
+                    printk(KERN_INFO "imrsim: map- lba is %llu\n", bio->bio->bi_sector);
                 }else{
-                    // In the third stage allocation Top(1,3,5,...)
+                    // 说明重定位的lba应该在顶部磁道上，处于第二阶段分配中
                     isTopTrack = 1;
-                    relocateTrackno = 2*((mapSize - boundary - IMR_TOP_TRACK_SIZE*TOP_TRACK_NUM_TOTAL/2) 
-                                    / IMR_TOP_TRACK_SIZE) + 1;
-                    bio->bi_sector = zlba
+                    relocateTrackno = (lba_offset - (boundary)) 
+                                        / (IMR_TOP_TRACK_SIZE << IMR_BLOCK_SIZE_SHIFT);
+                    lba_offset = (lba_offset - (boundary)) 
+                                        % (IMR_TOP_TRACK_SIZE << IMR_BLOCK_SIZE_SHIFT);
+                    bio->bio->bi_sector = zlba
                         + (relocateTrackno*(IMR_TOP_TRACK_SIZE+IMR_BOTTOM_TRACK_SIZE)<<IMR_BLOCK_SIZE_SHIFT)
-                        + (((mapSize - boundary - IMR_TOP_TRACK_SIZE*TOP_TRACK_NUM_TOTAL/2) % IMR_TOP_TRACK_SIZE)<<IMR_BLOCK_SIZE_SHIFT);
-                    printk(KERN_INFO "imrsim: write_ops_3(top_2) - start LBA is %llu, PBA is %llu\n", lba>>IMR_BLOCK_SIZE_SHIFT, bio->bi_iter.bi_sector);
-                    zone_status[zone_idx].z_pba_map[block_offset] = (bio->bi_sector - zlba) >> IMR_BLOCK_SIZE_SHIFT;
-                    zone_status[zone_idx].z_map_size++;
-                    lba = bio->bi_sector;
+                        + lba_offset;
+                    lba = bio->bio->bi_sector;
+                    printk(KERN_INFO "imrsim: map- lba is %llu\n", bio->bio->bi_sector);
                 }
-            }else{            // an update operation
-                bio->bi_sector = zlba + (zone_status[zone_idx].z_pba_map[block_offset] << IMR_BLOCK_SIZE_SHIFT);
-                printk(KERN_INFO "imrsim: update_ops - start lba is %llu, pba is %llu\n", lba, bio->bi_sector);
-                lba = bio->bi_sector;
-            }
-            break;
-        default:
-            printk(KERN_ERR "imrsim: error: Allocation of more phases is not currently supported!\n");
-    }
-    #else
-    switch(IMR_ALLOCATION_PHASE)
-    {
-        case 1:
-            lba = bio->bi_iter.bi_sector;
-            break;
-        case 2:
-            lba = bio->bi_iter.bi_sector;
-            //printk(KERN_INFO "imrsim: request- lba(sectors) is %llu\n", lba);
-            lba_offset = bio->bi_iter.bi_sector - zlba;
-            block_offset = lba_offset >> IMR_BLOCK_SIZE_SHIFT;
-            //Check the mapping table, ret indicates whether the block where lba is located is in the mapping table
-            ret = zone_status[zone_idx].z_pba_map[block_offset]!=-1?1:0;
-            if(!ret){         // lba is not in the mapping table, indicating a new write operation
-                // Fill the mapping table, allocate tracks according to the stage, and write data
-                // Note: Multiply TOP_TRACK_NUM_TOTAL because the number of top and bottom tracks in the zone is equal
-                boundary = IMR_BOTTOM_TRACK_SIZE * TOP_TRACK_NUM_TOTAL;
-                if(zone_status[zone_idx].z_map_size < boundary){
-                    // Indicates that the relocated lba should be on the bottom track, in the first stage allocation
+                break;
+            case 3:
+                printk(KERN_INFO "imrsim: map- lba is %llu\n", bio->bio->bi_sector);
+                lba_offset = bio->bio->bi_sector - zlba;
+                boundary = IMR_BOTTOM_TRACK_SIZE * TOP_TRACK_NUM_TOTAL << IMR_BLOCK_SIZE_SHIFT;
+                if(lba_offset < boundary){
+                    // 说明重定位的lba应该在底部磁道上，处于第一阶段分配中
+                    // 备注：乘TOP_TRACK_NUM_TOTAL是因为zone中顶部磁道和底部磁道数目相等
+                    // 判断应该在第几个底部磁道上
                     isTopTrack = 0;
-                    // Judgment should be redirected to the first few bottom tracks
-                    relocateTrackno = zone_status[zone_idx].z_map_size / IMR_BOTTOM_TRACK_SIZE;
-                    // Get the pba corresponding to the bio starting lba
-                    bio->bi_iter.bi_sector = zlba  
+                    relocateTrackno = lba_offset / (IMR_BOTTOM_TRACK_SIZE << IMR_BLOCK_SIZE_SHIFT);
+                    lba_offset = lba_offset % (IMR_BOTTOM_TRACK_SIZE << IMR_BLOCK_SIZE_SHIFT);
+                    bio->bio->bi_sector = zlba
                         + (((relocateTrackno+1)*(IMR_TOP_TRACK_SIZE)+relocateTrackno*IMR_BOTTOM_TRACK_SIZE)<<IMR_BLOCK_SIZE_SHIFT) 
-                        + ((zone_status[zone_idx].z_map_size % IMR_BOTTOM_TRACK_SIZE) << IMR_BLOCK_SIZE_SHIFT);
-                    printk(KERN_INFO "imrsim: write_ops(bottom) on zone %u - start LBA is %llu, PBA is %llu\n", zone_idx, lba>>IMR_BLOCK_SIZE_SHIFT, bio->bi_iter.bi_sector>>IMR_BLOCK_SIZE_SHIFT);
-                    zone_status[zone_idx].z_pba_map[block_offset] = (bio->bi_iter.bi_sector - zlba) >> IMR_BLOCK_SIZE_SHIFT;
-                    zone_status[zone_idx].z_map_size++;
-                    lba = bio->bi_iter.bi_sector;
-                }else{
-                    // Indicates that the relocated lba should be on the top track, in a second stage allocation
+                        + lba_offset;
+                    lba = bio->bio->bi_sector;
+                    printk(KERN_INFO "imrsim: Newmap(Bottom-1)- lba is %llu\n", bio->bio->bi_sector);
+                }else if(lba_offset >= boundary 
+                    && lba_offset < boundary + ((IMR_TOP_TRACK_SIZE/2)*TOP_TRACK_NUM_TOTAL<<IMR_BLOCK_SIZE_SHIFT)){
+                    // 说明重定位的lba应该在顶部磁道上，处于第二阶段分配中(0,2,4,...)
                     isTopTrack = 1;
-                    relocateTrackno = (zone_status[zone_idx].z_map_size - boundary) / IMR_TOP_TRACK_SIZE;
-                    bio->bi_iter.bi_sector = zlba
+                    relocateTrackno = 2*((lba_offset - (boundary)) 
+                                        / (IMR_TOP_TRACK_SIZE << IMR_BLOCK_SIZE_SHIFT));
+                    lba_offset = (lba_offset - (boundary)) 
+                                        % (IMR_BOTTOM_TRACK_SIZE << IMR_BLOCK_SIZE_SHIFT);
+                    bio->bio->bi_sector = zlba
                         + (relocateTrackno*(IMR_TOP_TRACK_SIZE+IMR_BOTTOM_TRACK_SIZE)<<IMR_BLOCK_SIZE_SHIFT)
-                        + (((zone_status[zone_idx].z_map_size - boundary) % IMR_TOP_TRACK_SIZE)<<IMR_BLOCK_SIZE_SHIFT);
-                    printk(KERN_INFO "imrsim: write_ops(top) on zone %u - start LBA is %llu, PBA is %llu\n", zone_idx, lba>>IMR_BLOCK_SIZE_SHIFT, bio->bi_iter.bi_sector>>IMR_BLOCK_SIZE_SHIFT);
-                    zone_status[zone_idx].z_pba_map[block_offset] = (bio->bi_iter.bi_sector - zlba) >> IMR_BLOCK_SIZE_SHIFT;
-                    zone_status[zone_idx].z_map_size++;
-                    lba = bio->bi_iter.bi_sector;
+                        + lba_offset;
+                    lba = bio->bio->bi_sector;
+                    printk(KERN_INFO "imrsim: Newmap(Top-2)- lba is %llu\n", bio->bio->bi_sector);
+                }else{
+                    // 说明重定位的lba应该在顶部磁道上，处于第三阶段分配中(1,3,5,...)
+                    isTopTrack = 1;
+                    relocateTrackno = 2*((lba_offset - (boundary) - ((IMR_TOP_TRACK_SIZE/2)*TOP_TRACK_NUM_TOTAL<<IMR_BLOCK_SIZE_SHIFT)) 
+                                        / (IMR_TOP_TRACK_SIZE << IMR_BLOCK_SIZE_SHIFT)) + 1;
+                    lba_offset = (lba_offset - (boundary) - ((IMR_TOP_TRACK_SIZE/2)*TOP_TRACK_NUM_TOTAL<<IMR_BLOCK_SIZE_SHIFT)) 
+                                        % (IMR_BOTTOM_TRACK_SIZE << IMR_BLOCK_SIZE_SHIFT);
+                    bio->bio->bi_sector = zlba
+                        + (relocateTrackno*(IMR_TOP_TRACK_SIZE+IMR_BOTTOM_TRACK_SIZE)<<IMR_BLOCK_SIZE_SHIFT)
+                        + lba_offset;
+                    lba = bio->bio->bi_sector;
+                    printk(KERN_INFO "imrsim: Newmap(Top-3)- lba is %llu\n", bio->bio->bi_sector);
                 }
-            }else{            // lba is in the mapping table, indicating an update operation
-                // Get pba from the mapping table, modify lba in bio
-                bio->bi_iter.bi_sector = zlba + (zone_status[zone_idx].z_pba_map[block_offset] << IMR_BLOCK_SIZE_SHIFT);
-                printk(KERN_INFO "imrsim: update_ops on zone %u - start LBA is %llu, PBA is %llu\n", zone_idx, lba>>IMR_BLOCK_SIZE_SHIFT, bio->bi_iter.bi_sector>>IMR_BLOCK_SIZE_SHIFT);
+                break;
+            default:
+                printk(KERN_ERR "imrsim: error: Allocation of more phases is not currently supported!\n");
+        }
+        #else
+        switch(IMR_ALLOCATION_PHASE)
+        {
+            case 1:
                 lba = bio->bi_iter.bi_sector;
-            }
-            break;
-        case 3:
-            lba = bio->bi_iter.bi_sector;
-            lba_offset = bio->bi_iter.bi_sector - zlba;
-            block_offset = lba_offset >> IMR_BLOCK_SIZE_SHIFT;
-            ret = zone_status[zone_idx].z_pba_map[block_offset]!=-1?1:0;
-            if(!ret){         // a new write operation
-                boundary = IMR_BOTTOM_TRACK_SIZE * TOP_TRACK_NUM_TOTAL;
-                __u32 mapSize = zone_status[zone_idx].z_map_size;
-                if(mapSize < boundary){
-                    // first stage allocation
-                    isTopTrack = 0;
-                    relocateTrackno = mapSize / IMR_BOTTOM_TRACK_SIZE;
-                    bio->bi_iter.bi_sector = zlba  
-                        + (((relocateTrackno+1)*(IMR_TOP_TRACK_SIZE)+relocateTrackno*IMR_BOTTOM_TRACK_SIZE)<<IMR_BLOCK_SIZE_SHIFT) 
-                        + ((mapSize % IMR_BOTTOM_TRACK_SIZE) << IMR_BLOCK_SIZE_SHIFT);
-                    printk(KERN_INFO "imrsim: write_ops_3(bottom) - start LBA is %llu, PBA is %llu\n", lba>>IMR_BLOCK_SIZE_SHIFT, bio->bi_iter.bi_sector>>IMR_BLOCK_SIZE_SHIFT);
-                    zone_status[zone_idx].z_pba_map[block_offset] = (bio->bi_iter.bi_sector - zlba) >> IMR_BLOCK_SIZE_SHIFT;
-                    zone_status[zone_idx].z_map_size++;
-                    lba = bio->bi_iter.bi_sector;
-                }else if(mapSize >= boundary 
-                    && mapSize < boundary + IMR_TOP_TRACK_SIZE*TOP_TRACK_NUM_TOTAL/2){
-                    // In second stage allocation Top(0,2,4,...)
-                    isTopTrack = 1;
-                    relocateTrackno = 2*((mapSize - boundary) / IMR_TOP_TRACK_SIZE);
-                    bio->bi_iter.bi_sector = zlba
-                        + (relocateTrackno*(IMR_TOP_TRACK_SIZE+IMR_BOTTOM_TRACK_SIZE)<<IMR_BLOCK_SIZE_SHIFT)
-                        + (((mapSize - boundary) % IMR_TOP_TRACK_SIZE) << IMR_BLOCK_SIZE_SHIFT);
-                    printk(KERN_INFO "imrsim: write_ops_3(top_1) - start LBA is %llu, PBA is %llu\n", lba>>IMR_BLOCK_SIZE_SHIFT, bio->bi_iter.bi_sector>>IMR_BLOCK_SIZE_SHIFT);
-                    zone_status[zone_idx].z_pba_map[block_offset] = (bio->bi_iter.bi_sector - zlba) >> IMR_BLOCK_SIZE_SHIFT;
-                    zone_status[zone_idx].z_map_size++;
-                    lba = bio->bi_iter.bi_sector;
-                }else{
-                    // In the third stage allocation Top(1,3,5,...)
-                    isTopTrack = 1;
-                    relocateTrackno = 2*((mapSize - boundary - IMR_TOP_TRACK_SIZE*TOP_TRACK_NUM_TOTAL/2) 
-                                    / IMR_TOP_TRACK_SIZE) + 1;
-                    bio->bi_iter.bi_sector = zlba
-                        + (relocateTrackno*(IMR_TOP_TRACK_SIZE+IMR_BOTTOM_TRACK_SIZE)<<IMR_BLOCK_SIZE_SHIFT)
-                        + (((mapSize - boundary - IMR_TOP_TRACK_SIZE*TOP_TRACK_NUM_TOTAL/2) % IMR_TOP_TRACK_SIZE)<<IMR_BLOCK_SIZE_SHIFT);
-                    printk(KERN_INFO "imrsim: write_ops_3(top_2) - start LBA is %llu, PBA is %llu\n", lba>>IMR_BLOCK_SIZE_SHIFT, bio->bi_iter.bi_sector);
-                    zone_status[zone_idx].z_pba_map[block_offset] = (bio->bi_iter.bi_sector - zlba) >> IMR_BLOCK_SIZE_SHIFT;
-                    zone_status[zone_idx].z_map_size++;
+                break;
+            case 2:
+                lba = bio->bi_iter.bi_sector;
+                //printk(KERN_INFO "imrsim: request- lba(sectors) is %llu\n", lba);
+                lba_offset = bio->bi_iter.bi_sector - zlba;
+                block_offset = lba_offset >> IMR_BLOCK_SIZE_SHIFT;
+                //查映射表,ret表示lba所在块是否在映射表中
+                ret = zone_status[zone_idx].z_pba_map[block_offset]!=-1?1:0;
+                if(!ret){         // lba不在映射表中，表示新写入操作
+                    // 填充映射表，按照阶段情况分配磁道，写入数据
+                    // 备注：乘TOP_TRACK_NUM_TOTAL是因为zone中顶部磁道和底部磁道数目相等
+                    boundary = IMR_BOTTOM_TRACK_SIZE * TOP_TRACK_NUM_TOTAL;
+                    if(zone_status[zone_idx].z_map_size < boundary){
+                        // 说明重定位的lba应该在底部磁道上，处于第一阶段分配中
+                        isTopTrack = 0;
+                        // 判断应该重定向到第几个底部磁道上
+                        relocateTrackno = zone_status[zone_idx].z_map_size / IMR_BOTTOM_TRACK_SIZE;
+                        // 得到bio起始lba对应的pba
+                        bio->bi_iter.bi_sector = zlba  
+                            + (((relocateTrackno+1)*(IMR_TOP_TRACK_SIZE)+relocateTrackno*IMR_BOTTOM_TRACK_SIZE)<<IMR_BLOCK_SIZE_SHIFT) 
+                            + ((zone_status[zone_idx].z_map_size % IMR_BOTTOM_TRACK_SIZE) << IMR_BLOCK_SIZE_SHIFT);
+                        printk(KERN_INFO "imrsim: write_ops(bottom) on zone %u - start LBA is %llu, PBA is %llu\n", zone_idx, lba>>IMR_BLOCK_SIZE_SHIFT, bio->bi_iter.bi_sector>>IMR_BLOCK_SIZE_SHIFT);
+                        zone_status[zone_idx].z_pba_map[block_offset] = (bio->bi_iter.bi_sector - zlba) >> IMR_BLOCK_SIZE_SHIFT;
+                        zone_status[zone_idx].z_map_size++;
+                        lba = bio->bi_iter.bi_sector;
+                    }else{
+                        // 说明重定位的lba应该在顶部磁道上，处于第二阶段分配中
+                        isTopTrack = 1;
+                        relocateTrackno = (zone_status[zone_idx].z_map_size - boundary) / IMR_TOP_TRACK_SIZE;
+                        bio->bi_iter.bi_sector = zlba
+                            + (relocateTrackno*(IMR_TOP_TRACK_SIZE+IMR_BOTTOM_TRACK_SIZE)<<IMR_BLOCK_SIZE_SHIFT)
+                            + (((zone_status[zone_idx].z_map_size - boundary) % IMR_TOP_TRACK_SIZE)<<IMR_BLOCK_SIZE_SHIFT);
+                        printk(KERN_INFO "imrsim: write_ops(top) on zone %u - start LBA is %llu, PBA is %llu\n", zone_idx, lba>>IMR_BLOCK_SIZE_SHIFT, bio->bi_iter.bi_sector>>IMR_BLOCK_SIZE_SHIFT);
+                        zone_status[zone_idx].z_pba_map[block_offset] = (bio->bi_iter.bi_sector - zlba) >> IMR_BLOCK_SIZE_SHIFT;
+                        zone_status[zone_idx].z_map_size++;
+                        lba = bio->bi_iter.bi_sector;
+                    }
+                }else{            // lba在映射表中，表示更新操作
+                    // 由映射表得到pba，修改bio中的lba
+                    bio->bi_iter.bi_sector = zlba + (zone_status[zone_idx].z_pba_map[block_offset] << IMR_BLOCK_SIZE_SHIFT);
+                    printk(KERN_INFO "imrsim: update_ops on zone %u - start LBA is %llu, PBA is %llu\n", zone_idx, lba>>IMR_BLOCK_SIZE_SHIFT, bio->bi_iter.bi_sector>>IMR_BLOCK_SIZE_SHIFT);
                     lba = bio->bi_iter.bi_sector;
                 }
-            }else{            // an update operation
-                bio->bi_iter.bi_sector = zlba + (zone_status[zone_idx].z_pba_map[block_offset] << IMR_BLOCK_SIZE_SHIFT);
-                printk(KERN_INFO "imrsim: update_ops - start lba is %llu, pba is %llu\n", lba, bio->bi_iter.bi_sector);
+                break;
+            case 3:
                 lba = bio->bi_iter.bi_sector;
-            }
-            break;
-        default:
-            printk(KERN_ERR "imrsim: error: Allocation of more phases is not currently supported!\n");
+                lba_offset = bio->bi_iter.bi_sector - zlba;
+                block_offset = lba_offset >> IMR_BLOCK_SIZE_SHIFT;
+                // 查映射表，ret表示lba所在块是否在映射表中
+                ret = zone_status[zone_idx].z_pba_map[block_offset]!=-1?1:0;
+                if(!ret){         // lba不在映射表中，表示新写入操作
+                    // 填充映射表，按照阶段情况分配磁道，写入数据
+                    boundary = IMR_BOTTOM_TRACK_SIZE * TOP_TRACK_NUM_TOTAL;
+                    __u32 mapSize = zone_status[zone_idx].z_map_size;
+                    if(mapSize < boundary){
+                        // 说明重定位的lba应该在底部磁道上，处于第一阶段分配中
+                        isTopTrack = 0;
+                        // 判断应该重定向到第几个底部磁道上
+                        relocateTrackno = mapSize / IMR_BOTTOM_TRACK_SIZE;
+                        // 得到pba (仅考虑每次写一块的情况) 
+                        bio->bi_iter.bi_sector = zlba  
+                            + (((relocateTrackno+1)*(IMR_TOP_TRACK_SIZE)+relocateTrackno*IMR_BOTTOM_TRACK_SIZE)<<IMR_BLOCK_SIZE_SHIFT) 
+                            + ((mapSize % IMR_BOTTOM_TRACK_SIZE) << IMR_BLOCK_SIZE_SHIFT);
+                        printk(KERN_INFO "imrsim: write_ops_3(bottom) - start LBA is %llu, PBA is %llu\n", lba>>IMR_BLOCK_SIZE_SHIFT, bio->bi_iter.bi_sector>>IMR_BLOCK_SIZE_SHIFT);
+                        zone_status[zone_idx].z_pba_map[block_offset] = (bio->bi_iter.bi_sector - zlba) >> IMR_BLOCK_SIZE_SHIFT;
+                        zone_status[zone_idx].z_map_size++;
+                        lba = bio->bi_iter.bi_sector;
+                    }else if(mapSize >= boundary 
+                        && mapSize < boundary + IMR_TOP_TRACK_SIZE*TOP_TRACK_NUM_TOTAL/2){
+                        // 说明重定位的lba应该在顶部磁道上，处于第二阶段分配中(0,2,4,...)
+                        isTopTrack = 1;
+                        relocateTrackno = 2*((mapSize - boundary) / IMR_TOP_TRACK_SIZE);
+                        bio->bi_iter.bi_sector = zlba
+                            + (relocateTrackno*(IMR_TOP_TRACK_SIZE+IMR_BOTTOM_TRACK_SIZE)<<IMR_BLOCK_SIZE_SHIFT)
+                            + (((mapSize - boundary) % IMR_TOP_TRACK_SIZE) << IMR_BLOCK_SIZE_SHIFT);
+                        printk(KERN_INFO "imrsim: write_ops_3(top_1) - start LBA is %llu, PBA is %llu\n", lba>>IMR_BLOCK_SIZE_SHIFT, bio->bi_iter.bi_sector>>IMR_BLOCK_SIZE_SHIFT);
+                        zone_status[zone_idx].z_pba_map[block_offset] = (bio->bi_iter.bi_sector - zlba) >> IMR_BLOCK_SIZE_SHIFT;
+                        zone_status[zone_idx].z_map_size++;
+                        lba = bio->bi_iter.bi_sector;
+                    }else{
+                        // 说明重定位的lba应该在顶部磁道上，处于第三阶段分配中(1,3,5,...)
+                        isTopTrack = 1;
+                        relocateTrackno = 2*((mapSize - boundary - IMR_TOP_TRACK_SIZE*TOP_TRACK_NUM_TOTAL/2) 
+                                        / IMR_TOP_TRACK_SIZE) + 1;
+                        bio->bi_iter.bi_sector = zlba
+                            + (relocateTrackno*(IMR_TOP_TRACK_SIZE+IMR_BOTTOM_TRACK_SIZE)<<IMR_BLOCK_SIZE_SHIFT)
+                            + (((mapSize - boundary - IMR_TOP_TRACK_SIZE*TOP_TRACK_NUM_TOTAL/2) % IMR_TOP_TRACK_SIZE)<<IMR_BLOCK_SIZE_SHIFT);
+                        printk(KERN_INFO "imrsim: write_ops_3(top_2) - start LBA is %llu, PBA is %llu\n", lba>>IMR_BLOCK_SIZE_SHIFT, bio->bi_iter.bi_sector);
+                        zone_status[zone_idx].z_pba_map[block_offset] = (bio->bi_iter.bi_sector - zlba) >> IMR_BLOCK_SIZE_SHIFT;
+                        zone_status[zone_idx].z_map_size++;
+                        lba = bio->bi_iter.bi_sector;
+                    }
+                }else{            // lba在映射表中，表示更新操作
+                    // 由映射表得到pba，修改bio中的lba
+                    bio->bi_iter.bi_sector = zlba + (zone_status[zone_idx].z_pba_map[block_offset] << IMR_BLOCK_SIZE_SHIFT);
+                    printk(KERN_INFO "imrsim: update_ops - start lba is %llu, pba is %llu\n", lba, bio->bi_iter.bi_sector);
+                    lba = bio->bi_iter.bi_sector;
+                }
+                break;
+            default:
+                printk(KERN_ERR "imrsim: error: Allocation of more phases is not currently supported!\n");
+        }
+        #endif
+        /* 重定位bio结束 */
+    }else{
+        #if LINUX_VERSION_CODE < KERNEL_VERSION(3, 14, 0)
+        lba = bio->bi_sector;
+        #else
+        lba = bio->bi_iter.bi_sector;
+        #endif
+        printk(KERN_INFO "imrsim DIRECT write option.\n");
     }
-    #endif
-    /* relocate bio end */
     
     rv = 0;
     elba = lba + bio_sectors;
@@ -1523,69 +1601,83 @@ int imrsim_write_rule_check(struct bio *bio, __u32 zone_idx,
 
     trackno = (lba - zlba) / ((IMR_TOP_TRACK_SIZE + IMR_BOTTOM_TRACK_SIZE) << 
                 IMR_BLOCK_SIZE_SHIFT);
-    // If it is a new write operation, there is no need to judge isTopTrack
+    // 若是新写入操作，则不需要对isTopTrack进行判断，其实也不需要重写
     if(ret){
         isTopTrack = (lba - (zlba + (trackno * (IMR_TOP_TRACK_SIZE + IMR_BOTTOM_TRACK_SIZE) <<
                     IMR_BLOCK_SIZE_SHIFT))) < (IMR_TOP_TRACK_SIZE << IMR_BLOCK_SIZE_SHIFT) ? 1 : 0;
     }
     printk(KERN_INFO "imrsim: %s trackno: %u, isTopTrack: %u.\n",__FUNCTION__, trackno, isTopTrack);
-    // If lba is on the top track, mark the top track with data, and on the bottom track, determine whether to rewrite
+
+    // 记录这次写操作
+    zone_state->stats.zone_stats[zone_idx].z_write_total++;
+    zone_state->stats.write_total++;
+
+    // 若是lba在顶部磁道则标记该顶部磁道存在数据，在底部磁道则判断是否重写
     if(isTopTrack){
         blockno = (lba - (zlba + (trackno * (IMR_TOP_TRACK_SIZE + IMR_BOTTOM_TRACK_SIZE) <<
                 IMR_BLOCK_SIZE_SHIFT))) >> IMR_BLOCK_SIZE_SHIFT;
         zone_status[zone_idx].z_tracks[trackno].isUsedBlock[blockno]=1;
         //printk(KERN_INFO "imrsim: SIGN - block is remember\n");
     }else{
+        // blockno首先是底部磁道的块编号，然后为该底部磁道对应于相邻顶部磁道的块编号
         wa_penalty=0;
         rewriteSign=0;
         blockno = ((lba - (zlba + (trackno * (IMR_TOP_TRACK_SIZE + IMR_BOTTOM_TRACK_SIZE) <<
                 IMR_BLOCK_SIZE_SHIFT))) >> IMR_BLOCK_SIZE_SHIFT) - IMR_TOP_TRACK_SIZE;
         trackrate = IMR_BOTTOM_TRACK_SIZE * 10000 / IMR_TOP_TRACK_SIZE;
+        // 在bio结束后执行rmw的r和w，以防imrsim_zone_lock导致死锁
         int wa_pba1=-1,wa_pba2=-1;
         imrsim_rmw_task.lba_num=0;
         if(trackno>=0 && zone_status[zone_idx].z_tracks[trackno].isUsedBlock[(__u32)(blockno*10000/trackrate)]==1){
             printk(KERN_INFO "imrsim: write amplification(zone_idx[%u]trackno), block: %u .\n",zone_idx, (__u32)(blockno*10000/trackrate));
-            zone_state->stats.zone_stats[zone_idx].rewrite_total++;
+            // 写放大增加
+            zone_state->stats.zone_stats[zone_idx].z_extra_write_total++;
+            zone_state->stats.zone_stats[zone_idx].z_write_total++;
+            zone_state->stats.extra_write_total++;
+            zone_state->stats.write_total++;
             rewriteSign++;
-            wa_penalty += (zone_state->config.dev_config.r_time_to_rmw_zone + 
+            // 增加时间代价
+            /*wa_penalty += (zone_state->config.dev_config.r_time_to_rmw_zone + 
                 zone_state->config.dev_config.w_time_to_rmw_zone + 
                 2*IMR_ROTATE_PENALTY);
+            */
             lba = zlba + (trackno * (IMR_TOP_TRACK_SIZE + IMR_BOTTOM_TRACK_SIZE) <<IMR_BLOCK_SIZE_SHIFT) 
                     + ((__u32)(blockno*10000/trackrate) <<IMR_BLOCK_SIZE_SHIFT);
-            //imrsim_rmw_task.lba[imrsim_rmw_task.lba_num] = lba;
-            //imrsim_rmw_task.lba_num++;
-            wa_pba1=lba>>IMR_BLOCK_SIZE_SHIFT;
+            imrsim_rmw_task.lba[imrsim_rmw_task.lba_num] = (sector_t)lba;
+            imrsim_rmw_task.lba_num++;
+            wa_pba1=lba>>IMR_BLOCK_SIZE_SHIFT;    // 以块为单位
         }
         if(trackno+1<TOP_TRACK_NUM_TOTAL && zone_status[zone_idx].z_tracks[trackno+1].isUsedBlock[(__u32)(blockno*10000/trackrate)]==1){
             printk(KERN_INFO "imrsim: write amplification(trackno+1), block: %u .\n", (__u32)(blockno*10000/trackrate));
-            zone_state->stats.zone_stats[zone_idx].rewrite_total++;
+            // 增加时间代价或者重写，写放大增加
+            zone_state->stats.zone_stats[zone_idx].z_extra_write_total++;
+            zone_state->stats.zone_stats[zone_idx].z_write_total++;
+            zone_state->stats.extra_write_total++;
+            zone_state->stats.write_total++;
             rewriteSign++;
-            wa_penalty += (zone_state->config.dev_config.r_time_to_rmw_zone + 
+            /*wa_penalty += (zone_state->config.dev_config.r_time_to_rmw_zone + 
                 zone_state->config.dev_config.w_time_to_rmw_zone + 
                 2*IMR_ROTATE_PENALTY);
+            */
             lba = zlba + ((trackno+1) * (IMR_TOP_TRACK_SIZE + IMR_BOTTOM_TRACK_SIZE) <<IMR_BLOCK_SIZE_SHIFT) 
                     + ((__u32)(blockno*10000/trackrate) <<IMR_BLOCK_SIZE_SHIFT);
-            //imrsim_rmw_task.lba[imrsim_rmw_task.lba_num] = lba;
-            //imrsim_rmw_task.lba_num++;
+            imrsim_rmw_task.lba[imrsim_rmw_task.lba_num] = (sector_t)lba;
+            imrsim_rmw_task.lba_num++;
             wa_pba2=lba>>IMR_BLOCK_SIZE_SHIFT;
         }
-        // write zoom time penalty
-        if(wa_penalty != 0){
+        // 写放大时间惩罚
+        /*if(wa_penalty != 0){
             udelay(wa_penalty);
-        }
-
-        if(1 == rewriteSign){
-            zone_state->stats.zone_stats[zone_idx].rewrite_single++;
-        }
+        }*/
         if(1 <= rewriteSign){
             printk(KERN_INFO "imrsim: WA, wa_pba_1:%d,wa_pba_2:%d.\n", wa_pba1, wa_pba2);
+            return 1;
         }
-        //imrsim_rmw_process(bio);
     }
     return 0;
 }
 
-/* Device Read Rules */
+/* 设备读规则检查 */
 int imrsim_read_rule_check(struct bio *bio, __u32 zone_idx, 
                            sector_t bio_sectors, int policy_flag)
 {
@@ -1598,33 +1690,40 @@ int imrsim_read_rule_check(struct bio *bio, __u32 zone_idx,
     zlba = zone_idx_lba(zone_idx);
 
     #if LINUX_VERSION_CODE < KERNEL_VERSION(3, 14, 0)
+    /* -------------------------- 待同步 ------------------------------------- */
     lba = bio->bi_sector;
-    __u32 block_offset = (lba-zlba)>>IMR_BLOCK_SIZE_SHIFT;
+    __u32 block_offset = (lba-zlba)>>IMR_BLOCK_SIZE_SHIFT
     ret = zone_status[zone_idx].z_pba_map[block_offset]!=-1?1:0;
     if(ret){
         bio->bi_sector = zlba 
-            + (zone_status[zone_idx].z_pba_map[block_offset] << IMR_BLOCK_SIZE_SHIFT)
-            + (lba-zlba)%(1<<IMR_BLOCK_SIZE_SHIFT);
-        printk(KERN_INFO "imrsim: read_ops on zone %u - start LBA is %llu, PBA is %llu\n", zone_idx, lba>>IMR_BLOCK_SIZE_SHIFT, bio->bi_iter.bi_sector>>IMR_BLOCK_SIZE_SHIFT); 
+            + (zone_status[zone_idx].z_pba_map[block_offset] << IMR_BLOCK_SIZE_SHIFT);
+        printk(KERN_INFO "imrsim: read_ops on zone %u - start lba is %llu, pba is %llu\n", zone_idx, lba, bio->bi_sector); 
         lba = bio->bi_sector;
     }else{
         rv++;
-        //printk(KERN_ERR "imrsim: read none data\n"); 
     }
     #else
+    // 映射表
     lba = bio->bi_iter.bi_sector;
-    __u32 block_offset = (lba-zlba)>>IMR_BLOCK_SIZE_SHIFT;
-    ret = zone_status[zone_idx].z_pba_map[block_offset]!=-1?1:0;
-    if(ret){
-        bio->bi_iter.bi_sector = zlba 
-            + (zone_status[zone_idx].z_pba_map[block_offset] << IMR_BLOCK_SIZE_SHIFT)
-            + (lba-zlba)%(1<<IMR_BLOCK_SIZE_SHIFT);
-        printk(KERN_INFO "imrsim: read_ops on zone %u - start LBA is %llu, PBA is %llu\n", zone_idx, lba>>IMR_BLOCK_SIZE_SHIFT, bio->bi_iter.bi_sector>>IMR_BLOCK_SIZE_SHIFT); 
-        lba = bio->bi_iter.bi_sector;
+    // 若bio->bi_private 等于 read_event就不需要重定向bio
+    if(bio->bi_private != &imrsim_completion.read_event)
+    {
+        __u32 block_offset = (lba-zlba)>>IMR_BLOCK_SIZE_SHIFT;
+        ret = zone_status[zone_idx].z_pba_map[block_offset]!=-1?1:0;
+        if(ret){
+            bio->bi_iter.bi_sector = zlba 
+                + (zone_status[zone_idx].z_pba_map[block_offset] << IMR_BLOCK_SIZE_SHIFT)
+                + (lba-zlba)%(1<<IMR_BLOCK_SIZE_SHIFT);
+            printk(KERN_INFO "imrsim: read_ops on zone %u - start LBA is %llu, PBA is %llu\n", zone_idx, lba>>IMR_BLOCK_SIZE_SHIFT, bio->bi_iter.bi_sector>>IMR_BLOCK_SIZE_SHIFT); 
+            lba = bio->bi_iter.bi_sector;
+        }else{
+            rv++;
+            //printk(KERN_ERR "imrsim: read none data\n"); 
+        }
     }else{
-        rv++;
-        //printk(KERN_ERR "imrsim: read none data\n"); 
+        printk(KERN_INFO "imrsim DIRECT read option.\n");
     }
+    
     #endif
     rv = 0;
     elba = lba + bio_sectors;
@@ -1677,11 +1776,15 @@ static bool imrsim_ptask_gap_ok(__u32 idx)
     return false;
 }
 
-/* I/O mapping */
+/* 设备IO映射 */
 int imrsim_map(struct dm_target *ti, struct bio *bio)
 {
     struct imrsim_c *c = ti->private;
     int cdir = bio_data_dir(bio);      // 通过宏来获得请求的读写方向
+
+    if(bio){
+        printk(KERN_INFO "imrsim_map: the bio has %u sectors.\n", bio_sectors(bio));
+    }
 
     sector_t bio_sectors = bio_sectors(bio);
     int policy_rflag = 0;
@@ -1746,7 +1849,7 @@ int imrsim_map(struct dm_target *ti, struct bio *bio)
             goto nomap;
         }
         ret = imrsim_write_rule_check(bio, zone_idx, bio_sectors, policy_wflag);
-        if(ret){
+        if(ret<0){
             if(policy_wflag == 1 && policy_rflag == 1){
                 goto mapped;
             }
@@ -1758,6 +1861,9 @@ int imrsim_map(struct dm_target *ti, struct bio *bio)
             }else{
                 goto nomap;
             }
+        }
+        if(ret>0){
+            goto submitted;
         }
         imrsim_ptask.flag |= IMR_STATUS_CHANGE;
         if(imrsim_ptask.stu_zone_idx_cnt == IMR_PSTORE_QDEPTH){
@@ -1797,13 +1903,21 @@ int imrsim_map(struct dm_target *ti, struct bio *bio)
     mapped:
     if (bio_sectors(bio))
     #if LINUX_VERSION_CODE < KERNEL_VERSION(3, 14, 0)
-        bio->bi_sector =  c->start + dm_target_offset(ti, bio->bi_sector);
+        bio->bi_sector =  imrsim_map_sector(ti,bio->bi_sector);
     #else
-        bio->bi_iter.bi_sector =  c->start + dm_target_offset(ti, bio->bi_iter.bi_sector);
+        bio->bi_iter.bi_sector =  imrsim_map_sector(ti, bio->bi_iter.bi_sector);
     #endif
     mutex_unlock(&imrsim_zone_lock);
     //printk(KERN_INFO "zone_unlock.\n");
     return DM_MAPIO_REMAPPED;
+
+    submitted:
+    printk(KERN_INFO "imrsim_map: submitted and conduct rmw!\n");
+    imrsim_rmw_task.bio = bio;
+    imrsim_rmw_thread(ti);
+    mutex_unlock(&imrsim_zone_lock);
+    printk(KERN_INFO "imrsim_map: end rmw!\n");
+    return DM_MAPIO_SUBMITTED;
 
     nomap:
     imrsim_ptask.flag |= IMR_STATS_CHANGE;
@@ -1813,7 +1927,7 @@ int imrsim_map(struct dm_target *ti, struct bio *bio)
     return IMR_DM_IO_ERR;
 }
 
-/* Device status query */
+/* 设备状态查询 */
 static void imrsim_status(struct dm_target* ti, 
                           status_type_t type,
                           unsigned status_flags, 
@@ -1835,7 +1949,7 @@ static void imrsim_status(struct dm_target* ti,
    }
 }
 
-/* Present zone status information */
+/* 呈现zone状态信息 */
 static void imrsim_list_zone_status(struct imrsim_zone_status *ptr, 
                                     __u32 num_zones, int criteria)
 {
@@ -1851,7 +1965,7 @@ static void imrsim_list_zone_status(struct imrsim_zone_status *ptr,
    }
 }
 
-/* Query zone status information and record the result in ptr */
+/* 查询zone状态信息，将结果记录在ptr中 */
 int imrsim_query_zones(sector_t lba, int criteria,
                        __u32 *num_zones, struct imrsim_zone_status *ptr)
 {
@@ -1965,7 +2079,7 @@ int imrsim_query_zones(sector_t lba, int criteria,
 }
 EXPORT_SYMBOL(imrsim_query_zones);
 
-/* The ioctl interface method implements specific interface functions. */
+/* ioctl接口方法，实现具体的接口功能 */
 int imrsim_ioctl(struct dm_target *ti,
                  unsigned int cmd,
                  unsigned long arg)
@@ -2244,7 +2358,7 @@ int imrsim_ioctl(struct dm_target *ti,
     return -EFAULT;
 }
 
-/* To merge requests. */
+/* 请求合并 */
 static int imrsim_merge(struct dm_target* ti, 
                         struct bvec_merge_data* bvm,
                         struct bio_vec* biovec, 
@@ -2262,7 +2376,7 @@ static int imrsim_merge(struct dm_target* ti,
    return min(max_size, q->merge_bvec_fn(q, bvm, biovec));
 }
 
-/* iterate devices */
+/* 设备迭代 */
 static int imrsim_iterate_devices(struct dm_target *ti,
                                   iterate_devices_callout_fn fn,
                                   void *data)
@@ -2272,8 +2386,7 @@ static int imrsim_iterate_devices(struct dm_target *ti,
    return fn(ti, c->dev, c->start, ti->len, data);
 }
 
-/* Core structure - represents the target-driven plug-in, 
-and the structure collects the function entry for the functions implemented by the driver plug-in */
+/* 核心结构体——表示目标驱动插件，结构体汇集了驱动插件所实现功能的函数入口 */
 static struct target_type imrsim_target = 
 {
     .name            = "imrsim",
@@ -2288,7 +2401,7 @@ static struct target_type imrsim_target =
     .iterate_devices = imrsim_iterate_devices
 };
 
-/* init IMRSim module */
+/* 模块初始化 */
 static int __init dm_imrsim_init(void)
 {
     int ret = 0;
@@ -2301,16 +2414,16 @@ static int __init dm_imrsim_init(void)
     return ret;
 }
 
-/* kill IMRSim module */
+/* 模块注销 */
 static void dm_imrsim_exit(void)
 {
     dm_unregister_target(&imrsim_target);
 }
 
-module_init(dm_imrsim_init);    
-module_exit(dm_imrsim_exit);    
+module_init(dm_imrsim_init);    /* 入口宏 */
+module_exit(dm_imrsim_exit);    /* 出口宏 */
 
-/* Module related signature information */
+/* 模块相关签名信息 */
 MODULE_DESCRIPTION(DM_NAME "IMR Simulator");
 MODULE_AUTHOR("Zhimin Zeng <im_zzm@126.com>");
 MODULE_LICENSE("GPL");
