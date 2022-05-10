@@ -165,7 +165,7 @@ void imrsim_zone_iot(int fd, int seq, char *argv[])
    u32 num_zones = 0;      // how many zones need to query
    u64 num64     = 0;      // sectors in zone
    u64 lba       = 0;
-   u8  num8      = 0;      // 没用   
+   u8  num8      = 0;      
    imrsim_zbc_query  *zbc_query;
 
    switch(seq)
@@ -444,8 +444,6 @@ void imrsim_stats_iot(int fd, int seq, char *argv[])
     u32    num_zones = 0; 
     u64    num64     = 0;
 
-
-    // ioctl()方法，设备驱动程序中对设备I/O通道进行管理，需要驱动程序提供对ioctl的支持
     if (ioctl(fd, IOCTL_IMRSIM_GET_NUMZONES, &num_zones)) {
         printf("unable to get number of zones\n");
         return;
@@ -662,7 +660,7 @@ void imrsim_config_iot(int fd, int seq, char *argv[])
 
 int main(int argc, char* argv[])
 {
-    int   fd;           // 文件描述符：0表示成功，-1表示失败
+    int   fd;           
     int   seq;
     char  code;
 
@@ -671,7 +669,7 @@ int main(int argc, char* argv[])
     }
     code = argv[2][0];
     seq = atoi(argv[3]);
-    fd = open(argv[1], O_RDWR);      // 以可读写方式打开文件
+    fd = open(argv[1], O_RDWR);      
 
     if (-1 == fd)
     {
