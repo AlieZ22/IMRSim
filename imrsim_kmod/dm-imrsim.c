@@ -51,7 +51,7 @@ static __u32   IMR_BLOCK_SIZE_SHIFT;
 static __u32 IMR_TOP_TRACK_SIZE = 456;      /* number of blocks/topTrack  456 */
 static __u32 IMR_BOTTOM_TRACK_SIZE = 568;   /* number of blocks/bottomTrack  568 */
 
-__u32 VERSION = IMRSIM_VERSION(1,0,0);      /* The version number of IMRSIM：VERSION(x,y,z)=>((x<<16)|(y<<8)|z) */
+__u32 VERSION = IMRSIM_VERSION(1,1,0);      /* The version number of IMRSIM：VERSION(x,y,z)=>((x<<16)|(y<<8)|z) */
 
 struct imrsim_c{             /* Mapped devices in the Device Mapper framework, also known as logical devices. */
     struct dm_dev *dev;      /* block device */

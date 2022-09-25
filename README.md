@@ -15,13 +15,13 @@ On the whole, we design IMRSim into two parts: the kernel module and the user in
 - **The kernel module** is designed based on the Device Mapper framework to build the structure of the disk simulator and implement the required functions (read, write, stage allocation strategy, etc.).
 - **The user interface program** is a extensible tool to build the channel between the user and the simulator.  IMRSim uses the ioctl interface provided by Devcie Mapper to build a set of configuration tools that can be used by users. The user interface program is developed in the user space using the C standard library.
 
-More details can be found in the paper.
+More details can be found in the paper (IMRSim: A Disk Simulator for Interlaced Magnetic Recording Technology).
 
 
 
-## Source
+## Source (version 1.1.0)
 
-You can get IMRSim at the following link:
+You can get IMRSim V1.1.0 at the following link:
 
 1. github: [AlieZ22/IMRSim: A Disk Simulator for Interlaced Magnetic Recording Technology (github.com)](https://github.com/AlieZ22/IMRSim)
 3. get in touch with us.
@@ -176,7 +176,7 @@ $ fio --filename=/dev/mapper/imrsim --iodepth=128 --ioengine=libaio --direct=1 -
 
 ## Contact us
 
-Author:  temporarily anonymous
+Author:  Zeng zhimin
 
 Email: im_zzm@126.com
 
