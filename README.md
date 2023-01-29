@@ -180,7 +180,7 @@ $ fio --filename=/dev/mapper/imrsim --iodepth=128 --ioengine=libaio --direct=1 -
 
 The project passed the security inspection of CNNVD and was included by the Open Source Security Community (OSCS).
 
-[![Security Status](https://www.murphysec.com/platform3/v3/badge/1617938547948945408.svg?t=1)](https://www.murphysec.com/accept?code=8701786a3068b7a168c90d796e96a43c&type=1&from=2&t=2)
+[![Security Status](./SECURITY.svg)](https://www.murphysec.com/accept?code=8701786a3068b7a168c90d796e96a43c&type=1&from=2&t=2)
 
 
 
