@@ -15,7 +15,7 @@ On the whole, we design IMRSim into two parts: the kernel module and the user in
 - **The kernel module** is designed based on the Device Mapper framework to build the structure of the disk simulator and implement the required functions (read, write, stage allocation strategy, etc.).
 - **The user interface program** is a extensible tool to build the channel between the user and the simulator.  IMRSim uses the ioctl interface provided by Devcie Mapper to build a set of configuration tools that can be used by users. The user interface program is developed in the user space using the C standard library.
 
-More details can be found in the paper (IMRSim: A Disk Simulator for Interlaced Magnetic Recording Technology).
+More details can be found in the paper ([IMRSim: A Disk Simulator for Interlaced Magnetic Recording Technology]([IMRSim: A Disk Simulator for Interlaced Magnetic Recording Technology | SpringerLink](https://link.springer.com/chapter/10.1007/978-3-031-21395-3_25))).
 
 
 
@@ -184,10 +184,34 @@ The project passed the security inspection of CNNVD and was included by the Open
 
 
 
+## Citation
+
+If you found this work useful for you, please consider citing it.
+
+```txt
+@InProceedings{10.1007/978-3-031-21395-3_25,
+author="Zeng, Zhimin
+and Chen, Xinyu
+and Yang, Laurence T.
+and Cui, Jinhua",
+title="IMRSim: A Disk Simulator for Interlaced Magnetic Recording Technology",
+booktitle="Network and Parallel Computing",
+year="2022",
+publisher="Springer Nature Switzerland",
+address="Cham",
+pages="267--273",
+isbn="978-3-031-21395-3"
+}
+```
+
+
+
 ## Contact us
 
-Author:  Zeng zhimin
+For any issues/questions regarding the paper or simulator, please contact any of the following.
 
-Email: im_zzm@126.com
+Zeng zhimin  (Email: im_zzm@126.com)
+
+
 
 
